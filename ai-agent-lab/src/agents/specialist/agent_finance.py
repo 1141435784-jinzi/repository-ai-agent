@@ -1,20 +1,19 @@
 """
-=== 旅游规划专家 ===
+=== 财务规划专家 ===
 
 【功能】：
-1. 基于 Travel 知识库回答旅游问题
+1. 基于 Finance 知识库回答财务相关问题
 2. 使用 RAG 检索相关知识
-3. 专注于旅游规划咨询领域
-4. 支持工具调用（天气查询、地图导航、价格比较等）
+3. 专注于旅行预算规划和费用计算
+4. 支持工具调用（汇率查询、预算计算器等）
 
 【专业领域】：
-- 国内外旅游目的地推荐
-- 旅行路线规划与行程安排
-- 酒店、机票、签证等旅行预订信息
-- 当地文化、美食、景点介绍
-- 旅行安全注意事项和实用贴士
-- 预算规划与成本控制
-- 季节性旅游建议
+- 旅行预算规划与费用估算
+- 交通、住宿、餐饮等各项费用分析
+- 货币换算和汇率查询
+- 旅行保险和费用优化建议
+- 不同消费水平的预算方案
+- 旅行财务安全和风险提示
 """
 
 from typing import Dict, Any, Optional
@@ -22,35 +21,34 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from src.llm.service import get_llm
-from src.prompts import TRAVEL_TECH_PROMPT
-from src.config import KNOWLEDGE_BASE_SIGHTS_DIR
+from src.prompts import FINANCE_PROMPT
+from src.config import KNOWLEDGE_BASE_FINANCE_DIR
 from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
 
 
-class TravelSpecialist(DomainSpecialistAgent):
-    """旅游规划专家 - 继承自领域专家基类"""
+class FinanceSpecialist(DomainSpecialistAgent):
+    """财务规划专家 - 继承自领域专家基类"""
     
     def __init__(self):
-        """初始化旅游规划专家"""
+        """初始化财务规划专家"""
         super().__init__(
-            name="travel",
-            description="旅游规划咨询专家",
+            name="finance",
+            description="财务规划专家",
             capabilities=[
-                "旅游目的地推荐",
-                "旅行路线规划",
-                "酒店机票预订咨询",
-                "签证与出入境政策",
-                "当地文化与美食介绍",
-                "旅行安全与贴士",
-                "预算规划与成本控制"
+                "旅行预算规划",
+                "费用估算和分析",
+                "货币换算和汇率",
+                "旅行保险建议",
+                "费用优化方案",
+                "财务安全提示"
             ],
-            knowledge_dir=KNOWLEDGE_BASE_SIGHTS_DIR,
-            collection_name="travel_knowledge"
+            knowledge_dir=KNOWLEDGE_BASE_FINANCE_DIR,
+            collection_name="finance_knowledge"
         )
         self.llm = get_llm()
     
     async def initialize(self) -> None:
-        """初始化旅游规划专家"""
+        """初始化财务规划专家"""
         if self._initialized:
             return
         
@@ -81,14 +79,14 @@ class TravelSpecialist(DomainSpecialistAgent):
         Returns:
             Dict[str, Any]: 处理结果
         """
-        print(f"✈️ 旅游规划专家处理中: '{query[:30]}...'")
+        print(f"💰 财务规划专家处理中: '{query[:30]}...'")
         
         # RAG 检索
-        print(f"✈️ 旅游知识 RAG: 正在检索 '{query[:30]}...'")
+        print(f"💰 财务知识 RAG: 正在检索 '{query[:30]}...'")
         rag_result = await self.query_rag(query)
         
         # 构建提示
-        prompt_messages = TRAVEL_TECH_PROMPT.invoke(
+        prompt_messages = FINANCE_PROMPT.invoke(
             {"messages": [HumanMessage(content=query)]}
         )
         
@@ -129,29 +127,29 @@ class TravelSpecialist(DomainSpecialistAgent):
             "sources": rag_result.get("sources", []),
             "found_in_kb": rag_result["found"],
             "metadata": {
-                "domain": "travel_planning",
+                "domain": "finance_planning",
                 "expertise_level": "expert",
-                "response_type": "travel_advice"
+                "response_type": "finance_advice"
             }
         }
 
 
-# 全局旅游规划专家实例
-_travel_specialist = None
+# 全局财务规划专家实例
+_finance_specialist = None
 
 
-def get_travel_specialist() -> TravelSpecialist:
-    """获取全局旅游规划专家实例"""
-    global _travel_specialist
-    if _travel_specialist is None:
-        _travel_specialist = TravelSpecialist()
+def get_finance_specialist() -> FinanceSpecialist:
+    """获取全局财务规划专家实例"""
+    global _finance_specialist
+    if _finance_specialist is None:
+        _finance_specialist = FinanceSpecialist()
         # 注册到Agent管理器
-        agent_manager.register_agent(_travel_specialist)
-    return _travel_specialist
+        agent_manager.register_agent(_finance_specialist)
+    return _finance_specialist
 
 
 # 导出接口
 __all__ = [
-    "TravelSpecialist",
-    "get_travel_specialist",
+    "FinanceSpecialist",
+    "get_finance_specialist",
 ]

@@ -3,17 +3,19 @@
 ## 项目结构
 
 ```
-agent-lab/
-├── config.py          # 配置管理（API Key、模型参数、RAG 参数）
-├── tools.py           # 工具定义（计算器、时间、订单、知识库检索）
-├── prompts.py         # Prompt 模板管理
-├── memory.py          # 记忆机制（对话历史滑动窗口）
-├── agent.py           # LangGraph 状态图编排（ReAct Agent）
-├── rag_engine.py      # RAG 引擎（混合检索 + Rerank + ChromaDB）
-├── rag_evaluator.py   # RAG 质量评估（RAGAS 指标）
-├── main.py            # 交互式入口
+ai-agent-lab/
+├── src/
+│   ├── config/        # 配置管理（API Key、模型参数、RAG 参数）
+│   ├── tools/         # 工具定义（计算器、时间、订单、知识库检索）
+│   ├── prompts/       # Prompt 模板管理
+│   ├── memory/        # 记忆机制（对话历史滑动窗口）
+│   ├── agents/        # LangGraph 状态图编排（ReAct Agent）
+│   ├── rag/           # RAG 引擎（混合检索 + Rerank + ChromaDB）
+│   ├── llm/           # LLM 服务管理
+│   └── api/           # FastAPI 接口
 ├── knowledge_base/    # 知识库文件（Markdown）
 ├── chroma_db/         # 向量数据库持久化目录（自动生成）
+├── run_server.py      # 服务启动脚本
 └── requirements.txt
 ```
 
@@ -29,22 +31,142 @@ agent-lab/
 | rag_engine.py | 混合检索(向量+BM25)、Rerank重排序、ChromaDB、相似度阈值、LLM兜底 |
 | rag_evaluator.py | RAGAS评估指标：忠实度、相关性、检索精确率 |
 
+## 工作流架构
+
+Agent Lab 采用企业级多智能体协作架构，支持监督者模式和多工具交叉调用。
+
+### 整体架构图
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Agent 工作流架构                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   START ──▶ memory ──▶ supervisor ──┬──▶ agent_tech_rag ──▶ agent_tech  │
+│                                      │                    │            │
+│                                      │                    ▼            │
+│                                      │            ┌─────────────────┐   │
+│                                      │            │ should_continue │   │
+│                                      │            └────────┬────────┘   │
+│                                      │                     │           │
+│                                      │            ┌────────┴────────┐   │
+│                                      │            │                 │   │
+│                                      │            ▼                 ▼   │
+│                                      │    (有工具)           (无工具)  │
+│                                      │            │                 │   │
+│                                      │            ▼                 │   │
+│                                      │    tool_selector             │   │
+│                                      │            │                 │   │
+│                                      │     ┌──────┴──────┐          │   │
+│                                      │     │             │          │   │
+│                                      │     ▼             ▼          ▼   │
+│                                      │ local_tools   api_tools   mcp_tools
+│                                      │     │             │          │   │
+│                                      │     └──────┬─────┘          │   │
+│                                      │            │                 │   │
+│                                      │            ▼                 │   │
+│                                      │    tool_result_handler      │   │
+│                                      │            │                 │   │
+│                                      └────────────┼─────────────────┘   │
+│                                                   │                     │
+│                                      (回到 supervisor 继续循环)          │
+│                                                   │                     │
+│                                                   ▼                     │
+│                                              summary ──▶ END            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 架构说明
+
+| 组件 | 说明 |
+|------|------|
+| **memory** | 对话记忆节点，处理历史上下文 |
+| **supervisor** | 监督者节点，负责业务路由决策 |
+| **agent_tech / travel** | 业务 Agent 节点，执行具体任务 |
+| **agent_tech_rag / travel_rag** | RAG 检索节点，提供知识增强 |
+| **tool_selector** | 工具选择器，根据工具名判断类型 |
+| **local_tools / api_tools / mcp_tools** | 按类型分类的工具执行节点 |
+| **tool_result_handler** | 工具结果处理器，统一处理执行结果 |
+| **summary** | 总结节点，生成最终回复 |
+
+### 多工具交叉调用流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    多工具交叉调用示例                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  用户: "北京天气怎么样？明天适合去故宫吗？"                       │
+│                                                                 │
+│  ┌─────────┐    ┌─────────────┐    ┌──────────┐    ┌─────────┐  │
+│  │memory   │───▶│ supervisor  │───▶│travel_rag│───▶│  travel │  │
+│  └─────────┘    └─────────────┘    └──────────┘    └────┬────┘  │
+│                                                         │       │
+│                                                         ▼       │
+│                                              ┌──────────────────┐│
+│                                              │ should_continue ││
+│                                              └────────┬─────────┘│
+│                                               (有工具调用)        │
+│                                                       │         │
+│                                                       ▼         │
+│                                              ┌─────────────────┐ │
+│                                              │ tool_selector  │ │
+│                                              └────────┬────────┘ │
+│                                                       │          │
+│                                    ┌─────────────────┼────────┐ │
+│                                    ▼                 ▼        ▼ │
+│                             local_tools         api_tools  mcp_tools
+│                                    │                 │         │
+│                                    └────────┬────────┘         │
+│                                             │                  │
+│                                             ▼                  │
+│                                    ┌────────────────────┐       │
+│                                    │tool_result_handler│       │
+│                                    └────────┬───────────┘       │
+│                                             │                  │
+│                                             ▼                  │
+│                                      ┌──────────────┐          │
+│                                      │ supervisor   │          │
+│                                      └──────┬───────┘          │
+│                                             │                  │
+│                                             │ (继续循环或结束)   │
+│                                             ▼                  │
+│                                        summary ──▶ END         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 工具类型识别规则
+
+| 工具名前缀 | 工具类型 | 执行节点 |
+|-----------|---------|---------|
+| `mcp_` 或包含 `_mcp_` | MCP 工具 | mcp_tools |
+| `api_` 或包含 `_api_` | API 工具 | api_tools |
+| 其他 | 本地工具 | local_tools |
+
+### 核心优势
+
+1. **监督者模式** - 统一的路由决策，支持业务线横向扩展
+2. **工具智能分类** - 自动识别工具类型，灵活路由到对应执行器
+3. **多工具交叉调用** - 支持多种工具混合使用，自动循环调用
+4. **结果统一处理** - 工具执行结果统一处理后返回监督者
+5. **RAG 增强** - 每个 Agent 支持独立的 RAG 知识库检索
+
 ## 快速开始
 
 ```powershell
 # 1. 激活虚拟环境
-agent-lab\.venv\Scripts\Activate.ps1
+ai-agent-lab\.venv\Scripts\Activate.ps1
 
 # 2. 安装依赖
-(.venv) PS D:\PythonWorkSpace\agent-lab> pip install -r requirements.txt
+(.venv) PS G:\aitogod\AIWorkspace\ai-agent-lab> pip install -r requirements.txt
 
-# 3. 运行(终端模式)
-(.venv) PS D:\PythonWorkSpace\agent-lab> python main.py
-    运行（FastAPI 模式）
-(.venv) PS uvicorn api:app --reload --host 0.0.0.0 --port 8000
+# 3. 运行（FastAPI 模式）
+(.venv) PS G:\aitogod\AIWorkspace\ai-agent-lab> python run_server.py
 
 # 4. 关闭虚拟环境
-(.venv) PS D:\PythonWorkSpace\agent-lab> deactivate
+(.venv) PS G:\aitogod\AIWorkspace\ai-agent-lab> deactivate
 ```
 
 ## 试试这些对话

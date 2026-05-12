@@ -91,7 +91,10 @@ MAX_ITERATIONS: int = 20
 # RAG 配置
 # ============================================================
 KNOWLEDGE_BASE_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_agent")
-KNOWLEDGE_BASE_TRAVEL_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_travel")
+KNOWLEDGE_BASE_SIGHTS_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_sights")
+KNOWLEDGE_BASE_TRANSPORT_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_transport")
+KNOWLEDGE_BASE_FINANCE_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_finance")
+KNOWLEDGE_BASE_FOOD_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_food")
 CHROMA_DB_DIR: str = os.path.join(PROJECT_ROOT, "chroma_db")
 CHROMA_COLLECTION_NAME: str = "agent_knowledge"
 

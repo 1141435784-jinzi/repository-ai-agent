@@ -284,7 +284,7 @@
 ## 完整项目结构
 
 ```
-agent-lab4Tare/                # 项目根目录
+ai-agent-lab/                    # 项目根目录
 ├── src/                       # 源代码目录
 │   ├── prompts/              # Prompt 管理系统
 │   │   └── __init__.py       # 所有 Prompt 模板和安全函数
@@ -345,8 +345,11 @@ agent-lab4Tare/                # 项目根目录
 │       └── logger.py         # 结构化日志工具
 │
 ├── knowledge_base/           # 知识库文件
-│   ├── knowledge_base_agent/ # Agent 开发技术知识库
-│   └── knowledge_base_travel/ # 旅游知识库
+│   ├── knowledge_base_agent/      # Agent 开发技术知识库
+│   ├── knowledge_base_sights/     # 城市景点知识库
+│   ├── knowledge_base_transport/  # 交通知识库（航班、高铁）
+│   ├── knowledge_base_finance/    # 财务知识库
+│   └── knowledge_base_food/       # 美食知识库
 ├── chroma_db/                # 向量数据库
 ├── static/                   # 静态文件（Web 前端）
 ├── docs/                     # 文档目录
