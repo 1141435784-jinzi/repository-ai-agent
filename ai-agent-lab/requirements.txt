@@ -1,0 +1,109 @@
+# === 核心框架 ===
+langchain>=1.2.0
+langchain-classic>=1.0.0
+langchain-community>=0.4.0
+langchain-core>=1.3.0
+langchain-experimental>=0.4.0
+langchain-huggingface>=1.2.0
+langchain-ollama>=1.1.0
+langchain-openai>=1.1.0
+langchain-protocol>=0.0.15
+langchain-text-splitters>=1.1.0
+langgraph>=1.0.0
+langgraph-checkpoint>=4.0.0
+langgraph-checkpoint-postgres>=3.0.0  # LangGraph PostgreSQL 持久化（生产环境）
+langgraph-prebuilt>=1.0.0
+langgraph-sdk>=0.3.0
+langsmith>=0.8.0
+python-dotenv>=1.0.0
+
+# === 数据库 ===
+psycopg>=3.3.0
+psycopg-binary>=3.3.0
+psycopg-pool>=3.3.0
+SQLAlchemy>=2.0.0
+
+# === RAG 相关 ===
+chromadb>=1.5.0
+sentence-transformers>=5.4.0
+rank-bm25>=0.2.0
+unstructured>=0.22.0
+unstructured-client>=0.44.0
+
+# === API 服务 ===
+fastapi>=0.136.0
+uvicorn[standard]>=0.46.0
+sse-starlette>=3.4.0
+
+# === Embedding & Rerank 模型依赖 ===
+torch>=2.11.0
+transformers>=5.8.0
+tokenizers>=0.22.0
+safetensors>=0.7.0
+scikit-learn>=1.8.0
+scipy>=1.17.0
+numpy>=2.4.0
+numba>=0.65.0
+
+# === NLP 增强 ===
+spacy>=3.8.0
+spacy-legacy>=3.0.0
+spacy-loggers>=1.0.0
+langdetect>=1.0.0
+beautifulsoup4>=4.14.0
+lxml>=6.1.0
+
+# === 监控与可观测性 ===
+prometheus-client>=0.20.0
+structlog>=25.5.0
+opentelemetry-api>=1.40.0
+opentelemetry-sdk>=1.40.0
+opentelemetry-exporter-otlp-proto-grpc>=1.40.0
+
+# === MCP (Model Control Protocol) ===
+mcp>=1.27.0
+
+# === 通用工具 ===
+httpx>=0.28.0
+httpx-sse>=0.4.0
+requests>=2.33.0
+aiohttp>=3.13.0
+aiofiles>=25.1.0
+anyio>=4.13.0
+rich>=15.0.0
+tqdm>=4.67.0
+PyYAML>=6.0.0
+Jinja2>=3.1.0
+
+# === 数据处理 ===
+pydantic>=2.13.0
+pydantic-settings>=2.14.0
+pydantic-core>=2.46.0
+python-dateutil>=2.9.0
+python-multipart>=0.0.28
+packaging>=26.0
+attrs>=26.0
+
+# === 安全与加密 ===
+bcrypt>=5.0.0
+cryptography>=48.0.0
+PyJWT>=2.12.0
+
+# === 文件处理 ===
+pypdf>=6.11.0
+pypdfium2>=5.8.0
+python-magic>=0.4.0
+filetype>=1.2.0
+
+# === 机器学习辅助 ===
+tiktoken>=0.12.0
+onnxruntime>=1.26.0
+
+# === 缓存与工具 ===
+cachetools
+diskcache
+tenacity
+
+# === 其他 ===
+setuptools>=81.0.0
+pywin32>=306; sys_platform == "win32"

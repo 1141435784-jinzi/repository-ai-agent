@@ -1,0 +1,74 @@
+"""
+=== Agent Lab 生产环境 Docker Compose 配置 ===
+"""
+
+version: '3.8'
+
+services:
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: agent-lab-api-prod
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=agent_lab
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - LANGCHAIN_TRACING_V2=true
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LLM_ZHIPU_API_KEY=${LLM_ZHIPU_API_KEY}
+      - LLM_DEEPSEEK_API_KEY=${LLM_DEEPSEEK_API_KEY}
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    networks:
+      - agent-lab-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-lab-postgres-prod
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=agent_lab
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - agent-lab-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: agent-lab-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./deploy/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - agent-api
+    restart: unless-stopped
+    networks:
+      - agent-lab-network
+
+volumes:
+  postgres_data:
+
+networks:
+  agent-lab-network:
+    driver: bridge

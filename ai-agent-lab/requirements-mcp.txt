@@ -1,0 +1,95 @@
+# MCP 相关依赖 (2026年最新版本)
+# 用于在虚拟环境中安装真实的 MCP 服务器支持
+
+# ============================================
+# 核心 MCP 库
+# ============================================
+
+# 官方 MCP Python SDK (2026年主流版本)
+mcp>=1.26.0                     # 官方 MCP Python SDK，支持 FastMCP
+fastmcp>=0.8.0                  # FastMCP 快速开发框架
+mcp-arena>=0.5.0                # MCP 服务器开发工具包
+mcp-use>=1.6.0                  # MCP 工具使用辅助库
+
+# ============================================
+# 常用 MCP 服务器库
+# ============================================
+
+# 已验证可安装的 MCP 服务器
+# 通过 uv tool install 安装，例如：
+# uv tool install mcp-server-git
+# uv tool install mcp-server-postgresql
+# uv tool install mcp-server-weather
+# uv tool install mcp-server-sqlite
+
+# 注意：以下服务器包名可能需要验证
+# mcp-server-filesystem  # 包名可能不正确
+# mcp-server-config      # 包名可能不正确
+# mcp-server-duckduckgo  # 需要用户批准
+# mcp-server-document    # 包名可能不正确
+
+# ============================================
+# 企业级 MCP 工具
+# ============================================
+
+# 安全相关
+mcp-pypi>=3.0.0                 # PyPI 包安全扫描 MCP 服务器
+mcp-security>=0.3.0             # 安全扫描 MCP 服务器
+
+# 监控和可观测性
+mcp-metrics>=0.2.0              # 指标监控 MCP 服务器
+mcp-logging>=0.3.0              # 日志管理 MCP 服务器
+
+# 企业集成
+mcp-slack>=0.4.0                # Slack MCP 服务器
+mcp-jira>=0.3.0                 # Jira MCP 服务器
+mcp-confluence>=0.2.0           # Confluence MCP 服务器
+
+# ============================================
+# 基础依赖
+# ============================================
+
+# 异步和网络
+aiohttp>=3.10.0                 # 异步 HTTP 客户端
+httpx>=0.27.0                   # 现代化 HTTP 客户端
+websockets>=13.0                # WebSocket 支持
+
+# 数据格式
+pyyaml>=6.0.1                   # YAML 解析
+json5>=0.9.14                   # JSON5 支持
+tomli>=2.0.1                    # TOML 解析 (Python 3.12+)
+tomli-w>=1.0.0                  # TOML 写入
+
+# 工具和工具链
+uv>=0.4.10                      # Python 包管理器 (2026年主流)
+pydantic>=2.7.0                 # 数据验证和设置管理
+typing-extensions>=4.11.0       # 类型提示扩展
+
+# ============================================
+# 开发工具
+# ============================================
+
+# 测试和调试
+pytest>=8.2.0                   # 测试框架
+pytest-asyncio>=0.23.0          # 异步测试支持
+pytest-cov>=5.0.0               # 测试覆盖率
+
+# 代码质量
+black>=24.4.0                   # 代码格式化
+ruff>=0.5.0                     # 快速代码检查和格式化
+mypy>=1.10.0                    # 静态类型检查
+
+# ============================================
+# 注意
+# ============================================
+
+# 1. MCP 服务器通过 uv tool install 安装，例如：
+#    uv tool install mcp-server-git
+#    uv tool install mcp-server-filesystem
+#    uv tool install mcp-server-postgresql
+#    uv tool install mcp-server-duckduckgo
+#    uv tool install mcp-server-weather
+
+# 2. 运行 scripts/install_mcp_servers.py 来自动安装所有 MCP 服务器
+
+# 3. 2026年推荐使用 uv 作为包管理器，它比 pip 更快更可靠

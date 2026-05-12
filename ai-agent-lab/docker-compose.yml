@@ -1,0 +1,74 @@
+"""
+=== Agent Lab Docker Compose 配置 ===
+
+包含：
+- Agent API 服务
+- PostgreSQL 数据库（用于 Checkpointer）
+- ChromaDB（向量数据库）
+"""
+
+version: '3.8'
+
+services:
+  # Agent API 服务
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-lab-api
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=agent_lab
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=your_secure_password_here
+      - CHROMA_PERSIST_DIRECTORY=/chroma_db
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - chromadb
+    restart: unless-stopped
+    networks:
+      - agent-lab-network
+
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-lab-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=agent_lab
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=your_secure_password_here
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - agent-lab-network
+
+  # ChromaDB 向量数据库
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: agent-lab-chroma
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma_db
+    environment:
+      - CHROMA_SERVER_AUTHN_PROVIDER=none
+    restart: unless-stopped
+    networks:
+      - agent-lab-network
+
+volumes:
+  postgres_data:
+  chroma_data:
+
+networks:
+  agent-lab-network:
+    driver: bridge

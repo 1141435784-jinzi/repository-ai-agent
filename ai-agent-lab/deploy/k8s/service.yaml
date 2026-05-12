@@ -1,0 +1,16 @@
+"""
+=== Agent Lab Kubernetes Service ===
+"""
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-lab-service
+spec:
+  selector:
+    app: agent-lab-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer

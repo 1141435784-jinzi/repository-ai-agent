@@ -1,0 +1,66 @@
+{
+  "mcpServers": {
+    "git": {
+      "command": "mcp-server-git",
+      "args": [],
+      "env": {
+        "GIT_REPO_PATH": "."
+      },
+      "disabled": true,
+      "autoApprove": [
+        "git_status",
+        "git_log",
+        "git_diff"
+      ]
+    },
+    "postgresql": {
+      "command": "mcp-server-postgresql",
+      "args": [],
+      "env": {
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "agent_lab",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": ""
+      },
+      "disabled": true,
+      "autoApprove": [
+        "query",
+        "list_tables",
+        "describe_table"
+      ]
+    },
+    "sqlite": {
+      "command": "mcp-server-sqlite",
+      "args": [],
+      "env": {
+        "SQLITE_DB_PATH": "./data/checkpoints.db"
+      },
+      "disabled": true,
+      "autoApprove": [
+        "query",
+        "list_tables",
+        "describe_table"
+      ]
+    },
+    "weather": {
+      "command": "mcp-server-weather",
+      "args": [
+        "--api_key",
+        "f08b3a92229d9e9acc8914f0046c1109"
+      ],
+      "env": {},
+      "disabled": true,
+      "autoApprove": [
+        "query_weather"
+      ]
+    },
+    "hello-world": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/macsymwang/hello-mcp-server.git", "hello-mcp-server"],
+      "env": {},
+      "disabled": false,
+      "autoApprove": ["say_hello", "get_server_info", "echo_message", "count_words"]
+    }
+  }
+}
