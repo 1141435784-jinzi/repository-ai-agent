@@ -33,7 +33,7 @@
 # Agent 基类和管理器
 # ============================================================
 from .experts.base import (
-    DomainSpecialistAgent,
+    DomainExpertAgent,
     AgentManager,
     agent_manager,
 )
@@ -95,7 +95,7 @@ from .experts.agent_travel import (
 # ============================================================
 __all__ = [
     # Agent 基类和管理器
-    "DomainSpecialistAgent",
+    "DomainExpertAgent",
     "AgentManager",
     "agent_manager",
     

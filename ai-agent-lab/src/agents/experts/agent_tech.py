@@ -24,10 +24,10 @@ from langchain_core.runnables import RunnableConfig
 from src.llm.gateway import get_llm
 from src.prompts import AGENT_PROMPT
 from src.config import KNOWLEDGE_BASE_DIR
-from src.agents.experts.base import DomainSpecialistAgent, agent_manager
+from src.agents.experts.base import DomainExpertAgent, agent_manager
 
 
-class AgentTechExpert(DomainSpecialistAgent):
+class AgentTechExpert(DomainExpertAgent):
     """AI Agent 开发专家 - 继承自领域专家基类"""
     
     def __init__(self):

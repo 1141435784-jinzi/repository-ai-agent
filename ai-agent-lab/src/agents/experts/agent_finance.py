@@ -23,10 +23,10 @@ from langchain_core.runnables import RunnableConfig
 from src.llm.gateway import get_llm
 from src.prompts import FINANCE_PROMPT
 from src.config import KNOWLEDGE_BASE_FINANCE_DIR
-from src.agents.experts.base import DomainSpecialistAgent, agent_manager
+from src.agents.experts.base import DomainExpertAgent, agent_manager
 
 
-class FinanceExpert(DomainSpecialistAgent):
+class FinanceExpert(DomainExpertAgent):
     """财务规划专家 - 继承自领域专家基类"""
     
     def __init__(self):

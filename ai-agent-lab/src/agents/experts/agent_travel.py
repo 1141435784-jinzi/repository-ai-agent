@@ -24,10 +24,10 @@ from langchain_core.runnables import RunnableConfig
 from src.llm.gateway import get_llm
 from src.prompts import TRAVEL_TECH_PROMPT
 from src.config import KNOWLEDGE_BASE_SIGHTS_DIR
-from src.agents.experts.base import DomainSpecialistAgent, agent_manager
+from src.agents.experts.base import DomainExpertAgent, agent_manager
 
 
-class TravelExpert(DomainSpecialistAgent):
+class TravelExpert(DomainExpertAgent):
     """旅游规划专家 - 继承自领域专家基类"""
     
     def __init__(self):

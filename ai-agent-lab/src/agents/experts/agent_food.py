@@ -23,10 +23,10 @@ from langchain_core.runnables import RunnableConfig
 from src.llm.gateway import get_llm
 from src.prompts import FOOD_PROMPT
 from src.config import KNOWLEDGE_BASE_FOOD_DIR
-from src.agents.experts.base import DomainSpecialistAgent, agent_manager
+from src.agents.experts.base import DomainExpertAgent, agent_manager
 
 
-class FoodExpert(DomainSpecialistAgent):
+class FoodExpert(DomainExpertAgent):
     """美食推荐专家 - 继承自领域专家基类"""
     
     def __init__(self):

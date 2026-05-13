@@ -394,12 +394,12 @@ ai-agent-lab/                    # 项目根目录
 **模块组成**:
 - **workflow.py**: LangGraph 工作流引擎，包含 Supervisor 路由和多 Agent 协作
 - **experts/**: 专业领域 Agent 集合
-  - `base.py`: 领域专家基类（DomainSpecialistAgent）和全局管理器（AgentManager）
+  - `base.py`: 领域专家基类（DomainSeccialisalistAgent）和全局管理器（AgentManager）
   - `agent_tech.py`: AI Agent 开发专家
   - `agent_travel.py`: 旅游规划专家
 
 **架构特点**:
-- ✅ 简化架构：只保留 DomainSpecialistAgent 作为唯一基类
+- ✅ 简化架构：只保留 DomainExpertAgent 作为唯一基类
 - ✅ 统一接口：所有专业 Agent 继承相同基类
 - ✅ 工具基础设施：工具调用是共享基础设施，不是专业领域特权
 - ✅ 模块化设计：工作流引擎、Agent 基类、专业实现分离
@@ -580,7 +580,7 @@ START → memory_node → supervisor_node（LLM 意图分类）
 
 ### 添加新的专业 Agent
 1. 在 `src/agents/specialist/` 中创建新文件
-2. 继承 `DomainSpecialistAgent` 基类
+2. 继承 `DomainExpertAgent` 基类
 3. 实现 `initialize()` 和 `process()` 方法
 4. 在 `src/agents/__init__.py` 中导出
 5. 在 `src/agents/workflow.py` 中添加对应的 RAG 节点和 Agent 节点
@@ -614,7 +614,7 @@ python -c "from src.prompts import AGENT_PROMPT, sanitize_input; print('✅ prom
 
 # 测试工具系统导入
 python -c "from src.tools import get_all_tools, tool_manager; print('✅ tools 导入成功')"
-python -c "from src.agents import get_async_agent, DomainSpecialistAgent, agent_manager; print('✅ agents 导入成功')"
+python -c "from src.agents import get_async_agent, DomainExpertAgent, agent_manager; print('✅ agents 导入成功')"
 python -c "from src.memory import get_memory_manager; print('✅ memory 导入成功')"
 
 # 测试工具调用
@@ -642,14 +642,14 @@ python -c "
 import sys
 sys.path.insert(0, '.')
 try:
-    from src.agents.experts.base import DomainSpecialistAgent, agent_manager
+    from src.agents.experts.base import DomainExpertAgent, agent_manager
     from src.tools.tool_manager import DynamicToolManager, tool_manager
     from src.agents.workflow import get_async_agent, AgentState
     from src.agents.experts.agent_tech import get_agent_tech_specialist
     from src.agents.experts.agent_travel import get_travel_specialist
     
     print('✅ 架构重构验证成功')
-    print(f'  - DomainSpecialistAgent: {DomainSpecialistAgent}')
+    print(f'  - DomainExpertAgent: {DomainExpertAgent}')
     print(f'  - agent_manager 中有 {len(agent_manager.list_agents())} 个 Agent')
     print(f'  - DynamicToolManager: {DynamicToolManager}')
     print(f'  - 工作流引擎: {get_async_agent}')

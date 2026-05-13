@@ -21,7 +21,7 @@ from .agent_sights import SightsExpert, get_sights_expert
 from .agent_food import FoodExpert, get_food_expert
 from .agent_transport import TransportExpert, get_transport_expert
 from .agent_finance import FinanceExpert, get_finance_expert
-from .base import DomainSpecialistAgent, agent_manager
+from .base import DomainExpertAgent, agent_manager
 
 __all__ = [
     "AgentTechExpert",
@@ -34,6 +34,6 @@ __all__ = [
     "get_transport_expert",
     "FinanceExpert",
     "get_finance_expert",
-    "DomainSpecialistAgent",
+    "DomainExpertAgent",
     "agent_manager",
 ]

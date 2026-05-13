@@ -20,7 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 
-class DomainSpecialistAgent(ABC):
+class DomainExpertAgent(ABC):
     """领域专家Agent基类 - 所有专业领域Agent必须继承此类
     
     【核心设计】：
@@ -220,7 +220,7 @@ class AgentManager:
             cls._instance._initialized = False
         return cls._instance
     
-    def register_agent(self, agent: DomainSpecialistAgent) -> None:
+    def register_agent(self, agent: DomainExpertAgent) -> None:
         """注册Agent
         
         Args:
@@ -241,14 +241,14 @@ class AgentManager:
         self._initialized = True
         print(f"✅ 所有领域专家初始化完成，共 {len(self._agents)} 个专家")
     
-    def get_agent(self, name: str) -> Optional[DomainSpecialistAgent]:
+    def get_agent(self, name: str) -> Optional[DomainExpertAgent]:
         """获取Agent
         
         Args:
             name: Agent名称
             
         Returns:
-            Optional[DomainSpecialistAgent]: Agent实例，如果不存在则返回None
+            Optional[DomainExpertAgent]: Agent实例，如果不存在则返回None
         """
         return self._agents.get(name)
     
@@ -263,14 +263,14 @@ class AgentManager:
             agents_info.append(agent.get_metadata())
         return agents_info
     
-    def get_agent_by_capability(self, capability: str) -> List[DomainSpecialistAgent]:
+    def get_agent_by_capability(self, capability: str) -> List[DomainExpertAgent]:
         """根据能力获取Agent
         
         Args:
             capability: 能力关键词
             
         Returns:
-            List[DomainSpecialistAgent]: 具备该能力的Agent列表
+            List[DomainExpertAgent]: 具备该能力的Agent列表
         """
         matching_agents = []
         for name, agent in self._agents.items():
@@ -285,7 +285,7 @@ agent_manager = AgentManager()
 
 # 导出接口
 __all__ = [
-    "DomainSpecialistAgent",
+    "DomainExpertAgent",
     "AgentManager",
     "agent_manager"
 ]
