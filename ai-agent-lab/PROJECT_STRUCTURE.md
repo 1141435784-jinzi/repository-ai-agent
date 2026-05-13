@@ -173,6 +173,7 @@
 │  │    agent_history,         # Agent 执行历史                             │       │
 │  │    needs_collaboration,   # 是否需要其他 Agent 协作                     │       │
 │  │    collaboration_target,  # 协作目标 Agent                             │       │
+│  │    iteration_count,       # 当前迭代次数（防死循环）                    │       │
 │  │  }                                                                  │       │
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │

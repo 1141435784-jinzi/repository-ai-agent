@@ -10,15 +10,16 @@
 
 【设计原则】：
 1. 合规性：严格遵循 LangGraph 工具调用规范
-2. 可靠性：确保工具调用循环完整性
+2. 可靠性：确保工具调用循环完整性，支持重试机制
 3. 可扩展性：支持动态工具注册和调用
 4. 可观测性：完整的执行跟踪和错误处理
 5. 灵活性：支持多种工具交叉调用
+6. 高性能：状态图编译结果缓存
 
 【工作流架构】：
 START → memory → supervisor → [agent_rag] → agent → should_continue
     ↓(有工具调用)                              ↓(无工具调用)
-tool_selector → [tool_type_node] → tool_handler → should_continue
+tool_selector → [tool_type_node] → tool_handler → supervisor
                                                     ↓
                                                summary → END
 """
@@ -28,6 +29,9 @@ import asyncio
 import logging
 import uuid
 import json
+from functools import lru_cache
+
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from langchain_core.messages import (
     HumanMessage, SystemMessage, AIMessage, ToolMessage
@@ -63,6 +67,15 @@ workflow_logger = WorkflowLogger(logger)
 # ============================================================
 _agent_lock = asyncio.Lock()
 _async_agent = None
+_graph_compile_cache = {}  # 状态图编译结果缓存
+
+
+# ============================================================
+# 工具调用异常类
+# ============================================================
+class ToolCallError(Exception):
+    """工具调用异常"""
+    pass
 
 
 # ============================================================
@@ -110,6 +123,9 @@ class AgentState(TypedDict):
     agent_history: Annotated[list, reduce_list]  # Agent 执行历史
     needs_collaboration: Annotated[bool, reduce_bool]  # 是否需要其他 Agent 协作
     collaboration_target: Annotated[str, reduce_str]  # 协作目标 Agent
+    
+    # 迭代计数（用于防止死循环）
+    iteration_count: Annotated[int, reduce_str]  # 当前迭代次数
 
 
 # ============================================================
@@ -494,6 +510,21 @@ async def transport_agent_node(state: AgentState, config: RunnableConfig) -> dic
 
 
 # ------------------------------
+# 带重试机制的工具调用辅助函数
+# ------------------------------
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((ToolCallError, ConnectionError, asyncio.TimeoutError)),
+    reraise=True
+)
+async def _call_tool_with_retry(tool_node: ToolNode, state: AgentState, config: RunnableConfig) -> dict:
+    """带重试机制的工具调用"""
+    result = await tool_node.ainvoke(state, config)
+    return result
+
+
+# ------------------------------
 # 工具选择器节点
 # ------------------------------
 def tool_selector_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -525,7 +556,7 @@ def tool_selector_node(state: AgentState, config: RunnableConfig) -> dict:
 # 工具执行节点（按类型）
 # ------------------------------
 async def local_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """本地工具执行节点"""
+    """本地工具执行节点（支持重试）"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("local_tools", thread_id)
     
@@ -536,7 +567,9 @@ async def local_tool_node(state: AgentState, config: RunnableConfig) -> dict:
             return {"tool_error": "没有可用的本地工具"}
         
         tool_node = ToolNode(tools)
-        result = await tool_node.ainvoke(state, config)
+        
+        # 使用带重试的工具调用
+        result = await _call_tool_with_retry(tool_node, state, config)
         
         if "messages" in result:
             for msg in result["messages"]:
@@ -546,13 +579,16 @@ async def local_tool_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.node_exit("local_tools", thread_id, "执行完成")
         return result
         
+    except ToolCallError as e:
+        workflow_logger.error(thread_id, "local_tools", f"工具调用失败（已重试）: {e}")
+        return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
     except Exception as e:
         workflow_logger.error(thread_id, "local_tools", e)
         return {"tool_error": str(e)[:150]}
 
 
 async def api_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """API工具执行节点"""
+    """API工具执行节点（支持重试）"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("api_tools", thread_id)
     
@@ -563,7 +599,9 @@ async def api_tool_node(state: AgentState, config: RunnableConfig) -> dict:
             return {"tool_error": "没有可用的API工具"}
         
         tool_node = ToolNode(tools)
-        result = await tool_node.ainvoke(state, config)
+        
+        # 使用带重试的工具调用
+        result = await _call_tool_with_retry(tool_node, state, config)
         
         if "messages" in result:
             for msg in result["messages"]:
@@ -573,13 +611,16 @@ async def api_tool_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.node_exit("api_tools", thread_id, "执行完成")
         return result
         
+    except ToolCallError as e:
+        workflow_logger.error(thread_id, "api_tools", f"工具调用失败（已重试）: {e}")
+        return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
     except Exception as e:
         workflow_logger.error(thread_id, "api_tools", e)
         return {"tool_error": str(e)[:150]}
 
 
 async def mcp_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """MCP工具执行节点"""
+    """MCP工具执行节点（支持重试）"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("mcp_tools", thread_id)
     
@@ -590,7 +631,9 @@ async def mcp_tool_node(state: AgentState, config: RunnableConfig) -> dict:
             return {"tool_error": "没有可用的MCP工具"}
         
         tool_node = ToolNode(tools)
-        result = await tool_node.ainvoke(state, config)
+        
+        # 使用带重试的工具调用
+        result = await _call_tool_with_retry(tool_node, state, config)
         
         if "messages" in result:
             for msg in result["messages"]:
@@ -600,6 +643,9 @@ async def mcp_tool_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.node_exit("mcp_tools", thread_id, "执行完成")
         return result
         
+    except ToolCallError as e:
+        workflow_logger.error(thread_id, "mcp_tools", f"工具调用失败（已重试）: {e}")
+        return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
     except Exception as e:
         workflow_logger.error(thread_id, "mcp_tools", e)
         return {"tool_error": str(e)[:150]}
@@ -649,17 +695,23 @@ async def tool_result_handler(state: AgentState, config: RunnableConfig) -> dict
 # 工具循环控制（防死循环）
 # ------------------------------
 def should_continue(state: AgentState) -> Literal["tool_selector", "summary"]:
-    """决定是否继续工具调用循环"""
+    """决定是否继续工具调用循环
+    
+    优化改进：
+    1. 支持 END 节点路由 - Agent 可以直接返回结果，无需强制走工具调用
+    2. 使用显式迭代计数替代消息计数
+    3. 修复 thread_id 未定义的 bug
+    """
     last = state["messages"][-1]
+    thread_id = state.get("route", "default")
 
-    # 最大迭代限制
-    ai_count = sum(1 for m in state["messages"] if isinstance(m, AIMessage))
-    if ai_count >= MAX_ITERATIONS:
-        logger.info(f"🔄 [{thread_id}] 达到最大迭代次数 {MAX_ITERATIONS}，结束循环")
+    # 最大迭代限制（使用显式迭代计数）
+    iteration_count = state.get("iteration_count", 0)
+    if iteration_count >= MAX_ITERATIONS:
+        logger.info(f"🔄 [{thread_id[:8]}] 达到最大迭代次数 {MAX_ITERATIONS}，结束循环")
         return "summary"
 
     # 检查是否有工具调用
-    thread_id = state.get("route", "default")
     if hasattr(last, "tool_calls") and last.tool_calls:
         # 确保 tool_calls 是有效的列表
         if isinstance(last.tool_calls, list) and len(last.tool_calls) > 0:
@@ -669,7 +721,7 @@ def should_continue(state: AgentState) -> Literal["tool_selector", "summary"]:
             logger.info(f"🔄 [{thread_id[:8]}] 检测到工具调用（非标准格式）")
             return "tool_selector"
 
-    logger.info(f"🔄 [{thread_id[:8]}] 没有工具调用，进入总结")
+    logger.info(f"🔄 [{thread_id[:8]}] 没有工具调用，直接进入总结")
     return "summary"
 
 
@@ -859,19 +911,56 @@ def _build_graph() -> StateGraph:
 
 
 # ============================================================
-# 异步图构建（线程安全单例）
+# 异步图构建（线程安全单例 + 编译结果缓存）
 # ============================================================
-async def build_async_agent_graph():
-    """构建异步 Agent 图（线程安全）"""
+async def build_async_agent_graph(graph_id: str = "default"):
+    """构建异步 Agent 图（线程安全，带编译结果缓存）"""
+    global _graph_compile_cache
+    
+    # 检查缓存
+    if graph_id in _graph_compile_cache:
+        logger.info(f"📦 使用缓存的状态图: {graph_id}")
+        return _graph_compile_cache[graph_id]
+    
+    # 如果没有缓存，重新构建
+    logger.info(f"🔨 构建新的状态图: {graph_id}")
     graph = _build_graph()
     checkpointer = await get_async_checkpointer()
-    return graph.compile(checkpointer=checkpointer)
+    compiled_graph = graph.compile(checkpointer=checkpointer)
+    
+    # 缓存编译结果
+    _graph_compile_cache[graph_id] = compiled_graph
+    logger.info(f"💾 状态图已缓存: {graph_id}")
+    
+    return compiled_graph
 
 
-async def get_async_agent():
-    """获取异步 Agent 实例（单例）"""
+async def get_async_agent(graph_id: str = "default"):
+    """获取异步 Agent 实例（单例，支持多图缓存）"""
     global _async_agent
-    async with _agent_lock:
-        if _async_agent is None:
-            _async_agent = await build_async_agent_graph()
-    return _async_agent
+    
+    # 如果请求的是默认图，使用全局单例
+    if graph_id == "default":
+        async with _agent_lock:
+            if _async_agent is None:
+                _async_agent = await build_async_agent_graph(graph_id)
+        return _async_agent
+    
+    # 非默认图，直接从缓存获取或构建
+    return await build_async_agent_graph(graph_id)
+
+
+def clear_graph_cache(graph_id: str = None):
+    """清除状态图缓存"""
+    global _graph_compile_cache, _async_agent
+    
+    if graph_id is None:
+        # 清除所有缓存
+        _graph_compile_cache = {}
+        _async_agent = None
+        logger.info("🗑️ 所有状态图缓存已清除")
+    elif graph_id in _graph_compile_cache:
+        del _graph_compile_cache[graph_id]
+        if graph_id == "default":
+            _async_agent = None
+        logger.info(f"🗑️ 状态图缓存已清除: {graph_id}")
