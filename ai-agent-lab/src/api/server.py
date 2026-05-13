@@ -522,85 +522,87 @@ async def create_session():
     return SessionResponse(thread_id=thread_id)
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """发送消息并获取 Agent 回复（同步模式）
-
-    【知识点】这是最核心的接口，完整流程：
-    1. 前端发送 { message: "你好", thread_id: "xxx" }
-    2. API 将 message 包装为 HumanMessage
-    3. 通过 thread_id 让 Checkpointer 自动加载历史消息
-    4. Agent 执行 ReAct 循环（思考 → 工具调用 → 回复）
-    5. 提取最终回复返回给前端
-
-    【企业实战】为什么前端只传 message 和 thread_id？
-    - 对话历史由后端 Checkpointer 管理，前端不需要维护
-    - 减少网络传输量（不用每次把完整历史发过来）
-    - 安全：历史数据不暴露给前端
-
-    Args:
-        request: ChatRequest 请求体，包含 message（用户消息）和 thread_id（会话 ID）
-
-    Returns:
-        ChatResponse: 包含 reply（Agent 回复文本）和 thread_id（当前会话 ID）
-
-    Raises:
-        HTTPException(503): LLM API Key 未配置
-        HTTPException(500): Agent 执行过程中出错
-    """
-    if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=503, detail="LLM API Key 未配置")
-
-    try:
-        # 【安全防护】输入校验 — 检测 Prompt 注入风险
-        cleaned_input, is_risky, risk_desc = sanitize_input(request.message)
-        if is_risky:
-            logger.warning(f"Prompt 注入风险 — thread_id={request.thread_id}, {risk_desc}")
-
-        async_agent = await get_async_agent()
-        start_time = time.time()
-        result = await async_agent.ainvoke(
-            {"messages": [HumanMessage(content=cleaned_input)]},
-            config={
-                "configurable": {"thread_id": request.thread_id, "model": request.model},
-                "recursion_limit": MAX_ITERATIONS,
-            },
-        )
-        elapsed = time.time() - start_time
-        reply = extract_ai_response(result)
-
-        # 【安全防护】输出过滤 — 脱敏 + 泄露检测
-        reply = sanitize_output(reply)
-        
-        # 记录 Agent 调用指标
-        if PROMETHEUS_ENABLED:
-            # 这里需要从 result 中提取 Agent 类型和路由信息
-            # 简化处理：假设为通用聊天类型
-            agent_type = "chat"
-            route = "general"  # 可以从 result 中提取实际路由
-            
-            record_agent_call(
-                agent_type=agent_type,
-                route=route,
-                duration=elapsed,
-                status="success"
-            )
-
-        return ChatResponse(reply=reply, thread_id=request.thread_id)
-
-    except Exception as e:
-        logger.error(f"Agent 执行出错: {e}", exc_info=True)
-        
-        # 记录 Agent 错误指标
-        if PROMETHEUS_ENABLED:
-            record_agent_call(
-                agent_type="chat",
-                route="error",
-                duration=0,  # 执行失败，没有有效耗时
-                status="error"
-            )
-        
-        raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
+# ==================== 【已屏蔽】同步聊天接口 ====================
+# 注：当前只提供流式对话接口 /chat/stream
+# @app.post("/chat", response_model=ChatResponse)
+# async def chat(request: ChatRequest):
+#     """发送消息并获取 Agent 回复（同步模式）
+# 
+#     【知识点】这是最核心的接口，完整流程：
+#     1. 前端发送 { message: "你好", thread_id: "xxx" }
+#     2. API 将 message 包装为 HumanMessage
+#     3. 通过 thread_id 让 Checkpointer 自动加载历史消息
+#     4. Agent 执行 ReAct 循环（思考 → 工具调用 → 回复）
+#     5. 提取最终回复返回给前端
+# 
+#     【企业实战】为什么前端只传 message 和 thread_id？
+#     - 对话历史由后端 Checkpointer 管理，前端不需要维护
+#     - 减少网络传输量（不用每次把完整历史发过来）
+#     - 安全：历史数据不暴露给前端
+# 
+#     Args:
+#         request: ChatRequest 请求体，包含 message（用户消息）和 thread_id（会话 ID）
+# 
+#     Returns:
+#         ChatResponse: 包含 reply（Agent 回复文本）和 thread_id（当前会话 ID）
+# 
+#     Raises:
+#         HTTPException(503): LLM API Key 未配置
+#         HTTPException(500): Agent 执行过程中出错
+#     """
+#     if not DEEPSEEK_API_KEY:
+#         raise HTTPException(status_code=503, detail="LLM API Key 未配置")
+# 
+#     try:
+#         # 【安全防护】输入校验 — 检测 Prompt 注入风险
+#         cleaned_input, is_risky, risk_desc = sanitize_input(request.message)
+#         if is_risky:
+#             logger.warning(f"Prompt 注入风险 — thread_id={request.thread_id}, {risk_desc}")
+# 
+#         async_agent = await get_async_agent()
+#         start_time = time.time()
+#         result = await async_agent.ainvoke(
+#             {"messages": [HumanMessage(content=cleaned_input)]},
+#             config={
+#                 "configurable": {"thread_id": request.thread_id, "model": request.model},
+#                 "recursion_limit": MAX_ITERATIONS,
+#             },
+#         )
+#         elapsed = time.time() - start_time
+#         reply = extract_ai_response(result)
+# 
+#         # 【安全防护】输出过滤 — 脱敏 + 泄露检测
+#         reply = sanitize_output(reply)
+#         
+#         # 记录 Agent 调用指标
+#         if PROMETHEUS_ENABLED:
+#             # 这里需要从 result 中提取 Agent 类型和路由信息
+#             # 简化处理：假设为通用聊天类型
+#             agent_type = "chat"
+#             route = "general"  # 可以从 result 中提取实际路由
+#             
+#             record_agent_call(
+#                 agent_type=agent_type,
+#                 route=route,
+#                 duration=elapsed,
+#                 status="success"
+#             )
+# 
+#         return ChatResponse(reply=reply, thread_id=request.thread_id)
+# 
+#     except Exception as e:
+#         logger.error(f"Agent 执行出错: {e}", exc_info=True)
+#         
+#         # 记录 Agent 错误指标
+#         if PROMETHEUS_ENABLED:
+#             record_agent_call(
+#                 agent_type="chat",
+#                 route="error",
+#                 duration=0,  # 执行失败，没有有效耗时
+#                 status="error"
+#             )
+#         
+#         raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
 
 
 @app.post("/chat/stream")

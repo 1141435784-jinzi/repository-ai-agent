@@ -59,7 +59,7 @@
       "command": "uvx",
       "args": ["--from", "git+https://github.com/macsymwang/hello-mcp-server.git", "hello-mcp-server"],
       "env": {},
-      "disabled": false,
+      "disabled": true,
       "autoApprove": ["say_hello", "get_server_info", "echo_message", "count_words"]
     }
   }
