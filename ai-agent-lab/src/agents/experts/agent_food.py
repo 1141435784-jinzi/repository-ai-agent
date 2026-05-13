@@ -26,7 +26,7 @@ from src.config import KNOWLEDGE_BASE_FOOD_DIR
 from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class FoodSpecialist(DomainSpecialistAgent):
+class FoodExpert(DomainSpecialistAgent):
     """美食推荐专家 - 继承自领域专家基类"""
     
     def __init__(self):
@@ -135,21 +135,19 @@ class FoodSpecialist(DomainSpecialistAgent):
 
 
 # 全局美食推荐专家实例
-_food_specialist = None
+_food_expert = None
 
 
-def get_food_specialist() -> FoodSpecialist:
+def get_food_expert() -> FoodExpert:
     """获取全局美食推荐专家实例"""
-    global _food_specialist
-    if _food_specialist is None:
-        _food_specialist = FoodSpecialist()
-        # 注册到Agent管理器
-        agent_manager.register_agent(_food_specialist)
-    return _food_specialist
+    global _food_expert
+    if _food_expert is None:
+        _food_expert = FoodExpert()
+        agent_manager.register_agent(_food_expert)
+    return _food_expert
 
 
-# 导出接口
 __all__ = [
-    "FoodSpecialist",
-    "get_food_specialist",
+    "FoodExpert",
+    "get_food_expert",
 ]

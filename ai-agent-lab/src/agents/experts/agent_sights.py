@@ -26,7 +26,7 @@ from src.config import KNOWLEDGE_BASE_SIGHTS_DIR
 from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class SightsSpecialist(DomainSpecialistAgent):
+class SightsExpert(DomainSpecialistAgent):
     """景点推荐专家 - 继承自领域专家基类"""
     
     def __init__(self):
@@ -135,21 +135,19 @@ class SightsSpecialist(DomainSpecialistAgent):
 
 
 # 全局景点推荐专家实例
-_sights_specialist = None
+_sights_expert = None
 
 
-def get_sights_specialist() -> SightsSpecialist:
+def get_sights_expert() -> SightsExpert:
     """获取全局景点推荐专家实例"""
-    global _sights_specialist
-    if _sights_specialist is None:
-        _sights_specialist = SightsSpecialist()
-        # 注册到Agent管理器
-        agent_manager.register_agent(_sights_specialist)
-    return _sights_specialist
+    global _sights_expert
+    if _sights_expert is None:
+        _sights_expert = SightsExpert()
+        agent_manager.register_agent(_sights_expert)
+    return _sights_expert
 
 
-# 导出接口
 __all__ = [
-    "SightsSpecialist",
-    "get_sights_specialist",
+    "SightsExpert",
+    "get_sights_expert",
 ]

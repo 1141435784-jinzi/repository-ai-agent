@@ -9,15 +9,23 @@
 
 【架构】：
 用户输入 → Supervisor（意图分类）
-    ├── "agent_tech" → AI Agent 开发专家（RAG + LLM + 工具）
-    └── "travel"     → 旅游规划专家（RAG + LLM + 工具）
+    ├── "agent_tech"  → AI Agent 开发专家（RAG + LLM + 工具）
+    ├── "sights"      → 景点推荐专家（RAG + LLM + 工具）
+    ├── "food"        → 美食推荐专家（RAG + LLM + 工具）
+    ├── "transport"   → 交通出行专家（RAG + LLM + 工具）
+    ├── "finance"     → 财务规划专家（RAG + LLM + 工具）
+    └── "travel"      → 旅游规划专家（RAG + LLM + 工具）
 
 【模块】：
 - agent_base.py: 领域专家 Agent 基类和全局管理器
 - workflow.py: LangGraph 工作流引擎和 Supervisor 路由
 - tool_manager.py: 动态工具管理器
-- specialist/: 专业领域 Agent 实现
+- experts/: 专业领域 Agent 实现
     - agent_tech.py: AI Agent 开发专家
+    - agent_sights.py: 景点推荐专家
+    - agent_food.py: 美食推荐专家
+    - agent_transport.py: 交通出行专家
+    - agent_finance.py: 财务规划专家
     - agent_travel.py: 旅游规划专家
 """
 
@@ -52,14 +60,34 @@ from src.tools.tool_manager import (
 # ============================================================
 # 专业领域 Agent
 # ============================================================
-from .specialist.agent_tech import (
-    AgentTechSpecialist,
-    get_agent_tech_specialist,
+from .experts.agent_tech import (
+    AgentTechExpert,
+    get_agent_tech_expert,
 )
 
-from .specialist.agent_travel import (
-    TravelSpecialist,
-    get_travel_specialist,
+from .experts.agent_sights import (
+    SightsExpert,
+    get_sights_expert,
+)
+
+from .experts.agent_food import (
+    FoodExpert,
+    get_food_expert,
+)
+
+from .experts.agent_transport import (
+    TransportExpert,
+    get_transport_expert,
+)
+
+from .experts.agent_finance import (
+    FinanceExpert,
+    get_finance_expert,
+)
+
+from .experts.agent_travel import (
+    TravelExpert,
+    get_travel_expert,
 )
 
 # ============================================================
@@ -85,8 +113,16 @@ __all__ = [
     "get_tool_info",
     
     # 专业领域 Agent
-    "AgentTechSpecialist",
-    "get_agent_tech_specialist",
-    "TravelSpecialist",
-    "get_travel_specialist",
+    "AgentTechExpert",
+    "get_agent_tech_expert",
+    "SightsExpert",
+    "get_sights_expert",
+    "FoodExpert",
+    "get_food_expert",
+    "TransportExpert",
+    "get_transport_expert",
+    "FinanceExpert",
+    "get_finance_expert",
+    "TravelExpert",
+    "get_travel_expert",
 ]

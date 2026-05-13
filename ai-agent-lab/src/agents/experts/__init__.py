@@ -16,24 +16,24 @@
 """
 
 # 导出专业 Agent
-from .agent_tech import TechSpecialist, get_tech_specialist
-from .agent_sights import SightsSpecialist, get_sights_specialist
-from .agent_food import FoodSpecialist, get_food_specialist
-from .agent_transport import TransportSpecialist, get_transport_specialist
-from .agent_finance import FinanceSpecialist, get_finance_specialist
+from .agent_tech import AgentTechExpert, get_agent_tech_expert
+from .agent_sights import SightsExpert, get_sights_expert
+from .agent_food import FoodExpert, get_food_expert
+from .agent_transport import TransportExpert, get_transport_expert
+from .agent_finance import FinanceExpert, get_finance_expert
 from .base import DomainSpecialistAgent, agent_manager
 
 __all__ = [
-    "TechSpecialist",
-    "get_tech_specialist",
-    "SightsSpecialist",
-    "get_sights_specialist",
-    "FoodSpecialist",
-    "get_food_specialist",
-    "TransportSpecialist",
-    "get_transport_specialist",
-    "FinanceSpecialist",
-    "get_finance_specialist",
+    "AgentTechExpert",
+    "get_agent_tech_expert",
+    "SightsExpert",
+    "get_sights_expert",
+    "FoodExpert",
+    "get_food_expert",
+    "TransportExpert",
+    "get_transport_expert",
+    "FinanceExpert",
+    "get_finance_expert",
     "DomainSpecialistAgent",
     "agent_manager",
 ]

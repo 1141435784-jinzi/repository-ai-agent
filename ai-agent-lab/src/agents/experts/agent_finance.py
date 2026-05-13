@@ -26,7 +26,7 @@ from src.config import KNOWLEDGE_BASE_FINANCE_DIR
 from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class FinanceSpecialist(DomainSpecialistAgent):
+class FinanceExpert(DomainSpecialistAgent):
     """财务规划专家 - 继承自领域专家基类"""
     
     def __init__(self):
@@ -135,21 +135,19 @@ class FinanceSpecialist(DomainSpecialistAgent):
 
 
 # 全局财务规划专家实例
-_finance_specialist = None
+_finance_expert = None
 
 
-def get_finance_specialist() -> FinanceSpecialist:
+def get_finance_expert() -> FinanceExpert:
     """获取全局财务规划专家实例"""
-    global _finance_specialist
-    if _finance_specialist is None:
-        _finance_specialist = FinanceSpecialist()
-        # 注册到Agent管理器
-        agent_manager.register_agent(_finance_specialist)
-    return _finance_specialist
+    global _finance_expert
+    if _finance_expert is None:
+        _finance_expert = FinanceExpert()
+        agent_manager.register_agent(_finance_expert)
+    return _finance_expert
 
 
-# 导出接口
 __all__ = [
-    "FinanceSpecialist",
-    "get_finance_specialist",
+    "FinanceExpert",
+    "get_finance_expert",
 ]

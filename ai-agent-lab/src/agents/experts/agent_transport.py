@@ -26,7 +26,7 @@ from src.config import KNOWLEDGE_BASE_TRANSPORT_DIR
 from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class TransportSpecialist(DomainSpecialistAgent):
+class TransportExpert(DomainSpecialistAgent):
     """交通出行专家 - 继承自领域专家基类"""
     
     def __init__(self):
@@ -135,21 +135,19 @@ class TransportSpecialist(DomainSpecialistAgent):
 
 
 # 全局交通出行专家实例
-_transport_specialist = None
+_transport_expert = None
 
 
-def get_transport_specialist() -> TransportSpecialist:
+def get_transport_expert() -> TransportExpert:
     """获取全局交通出行专家实例"""
-    global _transport_specialist
-    if _transport_specialist is None:
-        _transport_specialist = TransportSpecialist()
-        # 注册到Agent管理器
-        agent_manager.register_agent(_transport_specialist)
-    return _transport_specialist
+    global _transport_expert
+    if _transport_expert is None:
+        _transport_expert = TransportExpert()
+        agent_manager.register_agent(_transport_expert)
+    return _transport_expert
 
 
-# 导出接口
 __all__ = [
-    "TransportSpecialist",
-    "get_transport_specialist",
+    "TransportExpert",
+    "get_transport_expert",
 ]

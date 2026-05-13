@@ -27,7 +27,7 @@ from src.config import KNOWLEDGE_BASE_DIR
 from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class AgentTechSpecialist(DomainSpecialistAgent):
+class AgentTechExpert(DomainSpecialistAgent):
     """AI Agent 开发专家 - 继承自领域专家基类"""
     
     def __init__(self):
@@ -137,21 +137,20 @@ class AgentTechSpecialist(DomainSpecialistAgent):
 
 
 # 全局 AI Agent 开发专家实例
-_agent_tech_specialist = None
+_agent_tech_expert = None
 
 
-def get_agent_tech_specialist() -> AgentTechSpecialist:
+def get_agent_tech_expert() -> AgentTechExpert:
     """获取全局 AI Agent 开发专家实例"""
-    global _agent_tech_specialist
-    if _agent_tech_specialist is None:
-        _agent_tech_specialist = AgentTechSpecialist()
-        # 注册到Agent管理器
-        agent_manager.register_agent(_agent_tech_specialist)
-    return _agent_tech_specialist
+    global _agent_tech_expert
+    if _agent_tech_expert is None:
+        _agent_tech_expert = AgentTechExpert()
+        agent_manager.register_agent(_agent_tech_expert)
+    return _agent_tech_expert
 
 
 # 导出接口
 __all__ = [
-    "AgentTechSpecialist",
-    "get_agent_tech_specialist",
+    "AgentTechExpert",
+    "get_agent_tech_expert",
 ]
