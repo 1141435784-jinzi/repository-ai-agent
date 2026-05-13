@@ -100,8 +100,12 @@
 │  │         │                                                           │       │
 │  │         ▼                                                           │       │
 │  │  ┌────────────────┐  Supervisor（LLM 意图分类，temperature=0）       │       │
-│  │  │supervisor_node │  · "agent_tech" — Agent 开发技术问题             │       │
-│  │  │                │  · "travel"     — 旅游规划咨询                   │       │
+│  │  │supervisor_node │  · "agent_tech" — AI Agent 开发技术问题          │       │
+│  │  │                │  · "sights"     — 景点推荐咨询                    │       │
+│  │  │                │  · "food"       — 美食推荐咨询                    │       │
+│  │  │                │  · "transport"  — 交通出行咨询                    │       │
+│  │  │                │  · "finance"    — 财务规划咨询                    │       │
+│  │  │                │  · "travel"     — 旅游规划咨询                    │       │
 │  │  └──────┬─────────┴──┐                                             │       │
 │  │         │            │  route_by_supervisor()                        │       │
 │  │         │            │                                              │       │
