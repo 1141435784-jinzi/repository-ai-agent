@@ -163,15 +163,6 @@ async def lifespan(app: FastAPI):
             # 显示已连接的服务器
             for server in connected_servers:
                 logger.info(f"    - {server['name']}: {server['tools_count']} 个工具")
-            
-            # 特别显示 weather_cn 工具状态
-            weather_tools = [t for t in tools if "weather_cn" in t.get("name", "")]
-            if weather_tools:
-                logger.info(f"  ✅ weather_cn 工具可用: {len(weather_tools)} 个")
-                for tool in weather_tools:
-                    logger.info(f"    - {tool['name']}: {tool.get('description', '无描述')[:50]}...")
-            else:
-                logger.warning("  ⚠️ weather_cn 工具未找到")
         else:
             logger.warning("MCP 管理器初始化失败或没有可用的 MCP 服务器")
             
