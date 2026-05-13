@@ -83,114 +83,139 @@
 │                                                                                 │
 │  第三层：Agent 编排层（Orchestration Layer）— src/agents/workflow.py              │
 │  ─────────────────────────────────────────────────                              │
-│  职责：多 Agent 协作、Supervisor 意图路由、状态图驱动、ReAct 循环                    │
-│  技术：LangGraph StateGraph（Supervisor + 6 个专业 Expert Agent）                       │
+│  职责：多 Agent 协作、Supervisor 意图路由、状态图驱动、ReAct 循环、工具调用循环         │
+│  技术：LangGraph StateGraph（Supervisor + 5 个专业 Expert Agent）                       │
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐       │
 │  │              LangGraph 多 Agent 状态图（workflow.py）                │       │
-│  │                                                                     │       │
-│  │  【核心优化特性】                                                     │       │
-│  │  · 状态图编译缓存：首次编译后缓存，后续请求直接使用                      │       │
-│  │  · 工具调用重试：支持最多3次重试，指数退避等待（1-10秒）                 │       │
-│  │  · END节点路由：Agent可直接返回结果，无需强制走工具调用                  │       │
-│  │                                                                     │       │
-│  │  START                                                              │       │
-│  │    │                                                                │       │
-│  │    ▼                                                                │       │
-│  │  ┌──────────────┐  三层记忆处理：                                    │       │
-│  │  │ memory_node  │  · 滑动窗口（最近 N 轮原文）                       │       │
-│  │  │              │  · 摘要压缩（旧对话 LLM 压缩）                     │       │
-│  │  │              │  · 语义检索（向量匹配相关历史）                     │       │
-│  │  └──────┬───────┘                                                   │       │
-│  │         │                                                           │       │
-│  │         ▼                                                           │       │
-│  │  ┌────────────────┐  Supervisor（LLM 意图分类，temperature=0）       │       │
-│  │  │supervisor_node │  · "agent_tech" — AI Agent 开发技术问题          │       │
-│  │  │                │  · "sights"     — 景点推荐咨询                    │       │
-│  │  │                │  · "food"       — 美食推荐咨询                    │       │
-│  │  │                │  · "transport"  — 交通出行咨询                    │       │
-│  │  │                │  · "finance"    — 财务规划咨询                    │       │
-│  │  │                │  · "travel"     — 旅游规划咨询                    │       │
-│  │  └──────┬─────────┴──┐                                             │       │
-│  │         │            │  route_by_supervisor()                        │       │
-│  │         │            │                                              │       │
-│  │         ▼            ▼            ▼            ▼            ▼       │       │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │       │
-│  │  │agent_tech│  │sights   │  │transport│  │finance  │  │food     │   │       │
-│  │  │_rag_node│  │_rag_node│  │_rag_node│  │_rag_node│  │_rag_node│   │       │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘   │       │
-│  │       │            │            │            │            │          │       │
-│  │       ▼            ▼            ▼            ▼            ▼          │       │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │       │
-│  │  │agent_tech│  │sights  │  │transport│  │finance  │  │food     │   │       │
-│  │  │  _node  │  │ agent  │  │ agent   │  │ agent   │  │ agent   │   │       │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘   │       │
-│  │       │            │            │            │            │          │       │
-│  │       └────────────┴────┬───────┴────────────┴────────────┘          │       │
-│  │                         │                                             │       │
-│  │                         ▼                                             │       │
-│  │              ┌─────────────────┐                                     │       │
-│  │              │ tool_selector   │                                     │       │
-│  │              │ (选择工具类型)   │                                     │       │
-│  │              └───────┬─────────┘                                     │       │
-│  │                      │                                               │       │
-│  │       ┌──────────────┼──────────────┐                               │       │
-│  │       ▼              ▼              ▼                               │       │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐                               │       │
-│  │  │local_tools│  │api_tools│  │mcp_tools│  (支持重试：最多3次，指数退避)     │       │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘                               │       │
-│  │       │            │            │                                    │       │
-│  │       └────────────┴────┬───────┘                                    │       │
-│  │                         ▼                                            │       │
-│  │              ┌─────────────────┐                                     │       │
-│  │              │tool_result_     │                                     │       │
-│  │              │ handler         │                                     │       │
-│  │              └───────┬─────────┘                                     │       │
-│  │                      │                                               │       │
-│  │                      ▼                                               │       │
-│  │              ┌─────────────────┐                                     │       │
-│  │              │ should_continue │                                     │       │
-│  │              │  (工具循环控制)   │                                     │       │
-│  │              │  · iteration_count 防死循环                            │       │
-│  │              │  · 检测工具调用决定路由                                │       │
-│  │              └───────┬─────────┘                                     │       │
-│  │                 ┌────┴────┐                                         │       │
-│  │                 ▼         ▼                                         │       │
-│  │            ┌────────┐ ┌─────────┐                                   │       │
-│  │            │继续调用│ │ summary │                                   │       │
-│  │            │工具    │ │ (总结)  │                                   │       │
-│  │            └──┬─────┘ └────┬────┘                                   │       │
-│  │               │            │                                         │       │
-│  │               └─────┬──────┘                                         │       │
-│  │                     ▼                                               │       │
-│  │                   END                                                │       │
-│  │                                                                     │       │
-│  │  AgentState（TypedDict）:                                           │       │
-│  │  {                                                                  │       │
-│  │    messages,              # 对话消息（Annotated[list, add_messages]）   │       │
-│  │    trimmed_messages,      # 裁剪后的消息                                │       │
-│  │    memory_context,        # 三层记忆上下文                              │       │
-│  │    route,                 # Supervisor 路由结果                         │       │
-│  │    rag_context,           # RAG 检索上下文                              │       │
-│  │    rag_sources,           # RAG 来源文件列表                            │       │
-│  │    tool_type,             # 工具类型（local/api/mcp）                   │       │
-│  │    tool_error,            # 工具调用错误信息                            │       │
-│  │    collaboration_data,     # Agent 间共享数据                           │       │
-│  │    current_agent,         # 当前执行的 Agent                            │       │
-│  │    agent_history,         # Agent 执行历史                             │       │
-│  │    needs_collaboration,   # 是否需要其他 Agent 协作                     │       │
-│  │    collaboration_target,  # 协作目标 Agent                             │       │
-│  │    iteration_count,       # 当前迭代次数（防死循环）                    │       │
-│  │  }                                                                  │       │
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │
-│  专业 Agent 实现（src/agents/experts/）:                                    │       │
-│  ├─ agent_tech.py      — AI Agent 开发专家                                  │       │
-│  ├─ agent_sights.py    — 景点推荐专家                                        │       │
-│  ├─ agent_food.py      — 美食推荐专家                                        │       │
-│  ├─ agent_transport.py — 交通出行专家                                        │       │
-│  ├─ agent_finance.py   — 财务规划专家                                        │       │
-│  └─ agent_travel.py    — 旅游规划专家                                        │       │
+│  ┌─────────────────────────────────────────────────────────────────────┐       │
+│  │  【核心特性】                                                         │       │
+│  │  ├─ 状态图编译缓存（_graph_compile_cache）                           │       │
+│  │  ├─ 工具调用重试（tenacity，3次，指数退避1-10秒）                   │       │
+│  │  ├─ END节点路由（Agent可直接返回结果）                              │       │
+│  │  ├─ 线程安全单例（asyncio.Lock）                                    │       │
+│  │  ├─ 迭代计数防死循环（MAX_ITERATIONS）                              │       │
+│  │  ├─ 任务分解机制（复杂任务自动分解为子任务）                         │       │
+│  │  ├─ Agent间协作（跨领域知识共享）                                   │       │
+│  │  └─ 反思总结机制（记录关键决策和反思笔记）                           │       │
+│  └─────────────────────────────────────────────────────────────────────┘       │
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐       │
+│  │  【工作流架构】                                                       │       │
+│  │                                                                     │       │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐           │       │
+│  │  │    START     │───▶│   memory     │───▶│task_decompo- │           │       │
+│  │  └──────────────┘    │  (记忆处理)   │    │  sition      │           │       │
+│  │                      └──────────────┘    │  (任务分解)   │           │       │
+│  │                                          └───────┬───────┘           │       │
+│  │                                                  │                   │       │
+│  │                                                  ▼                   │       │
+│  │                                        ┌──────────────┐              │       │
+│  │                                        │  supervisor  │              │       │
+│  │                                        │  (意图路由)   │              │       │
+│  │                                        └───────┬───────┘              │       │
+│  │                                                │                     │       │
+│  │          ┌─────────────────────────────────────┼─────────────────┐    │       │
+│  │          ▼           ▼           ▼           ▼     ▼               │    │       │
+│  │    ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │       │
+│  │    │tech_rag │ │sight_rag│ │trans_rag│ │fin_rag  │ │food_rag │   │    │       │
+│  │    └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘   │    │       │
+│  │         │           │           │           │           │          │    │       │
+│  │         ▼           ▼           ▼           ▼           ▼          │    │       │
+│  │    ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │       │
+│  │    │agent_tech│ │sights  │ │transport│ │finance  │ │food_agent│   │    │       │
+│  │    │         │ │ agent   │ │ agent   │ │ agent   │ │         │   │    │       │
+│  │    └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘   │    │       │
+│  │         │           │           │           │           │          │    │       │
+│  │         └───────────┴───────────┴───────────┴───────────┘          │    │       │
+│  │                                       │                            │    │       │
+│  │                                       ▼                            │    │       │
+│  │                          ┌─────────────────────┐                    │    │       │
+│  │                          │collaboration_deci-  │                    │    │       │
+│  │                          │  sion               │                    │    │       │
+│  │                          │  (协作/工具决策)     │                    │    │       │
+│  │                          └───────────┬─────────┘                    │    │       │
+│  │                    ┌─────────────────┼─────────────────┐            │    │       │
+│  │                    ▼                 ▼                 ▼            │    │       │
+│  │          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │    │       │
+│  │          │tool_selector│   │  supervisor │   │  reflection │       │    │       │
+│  │          │ (工具选择)   │   │  (协作路由)  │   │  (反思总结)  │       │    │       │
+│  │          └──────┬──────┘   └─────────────┘   └──────┬──────┘       │    │       │
+│  │                 │                                   │               │    │       │
+│  │    ┌────────────┼────────────┐                     │               │    │       │
+│  │    ▼            ▼            ▼                     │               │    │       │
+│  │┌─────────┐  ┌─────────┐  ┌─────────┐              │               │    │       │
+│  ││local    │  │api      │  │mcp      │              │               │    │       │
+│  ││tools    │  │tools    │  │tools    │              │               │    │       │
+│  │└────┬────┘  └────┬────┘  └────┬────┘              │               │    │       │
+│  │     │            │            │                    │               │    │       │
+│  │     └────────────┼────────────┘                    │               │    │       │
+│  │                  ▼                                 │               │    │       │
+│  │         ┌───────────────┐                         │               │    │       │
+│  │         │tool_result_   │                         │               │    │       │
+│  │         │ handler       │─────────────────────────┘               │    │       │
+│  │         └───────────────┘                                       │    │       │
+│  │                                                                  │    │       │
+│  │                            ┌──────────────────────────────────────┘    │    │       │
+│  │                            ▼                                         │    │       │
+│  │                      ┌─────────────┐                                 │    │       │
+│  │                      │   summary   │                                 │    │       │
+│  │                      │   (总结)    │                                 │    │       │
+│  │                      └──────┬──────┘                                 │    │       │
+│  │                             │                                        │    │       │
+│  │                             ▼                                        │    │       │
+│  │                      ┌─────────────┐                                 │    │       │
+│  │                      │    END      │                                 │    │       │
+│  │                      └─────────────┘                                 │    │       │
+│  │                                                                     │       │
+│  │  【流程说明】                                                         │       │
+│  │  1. START → memory → task_decomposition（任务分解）                   │       │
+│  │  2. task_decomposition → supervisor（意图分类）                       │       │
+│  │  3. supervisor 路由到对应 RAG 节点                                   │       │
+│  │  4. RAG → Agent（生成响应）                                         │       │
+│  │  5. collaboration_decision 判断：                                    │       │
+│  │     ├─ 需要工具调用 → tool_selector → 工具 → handler → 循环回到决策    │       │
+│  │     ├─ 需要协作 → supervisor（重新路由到目标 Agent）                   │       │
+│  │     └─ 无需工具和协作 → reflection → summary → END                   │       │
+│  └─────────────────────────────────────────────────────────────────────┘       │
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐       │
+│  │  【状态定义】AgentState（TypedDict）                                  │       │
+│  │  ├─ messages           → 对话消息                                   │       │
+│  │  ├─ trimmed_messages   → 裁剪后的消息                               │       │
+│  │  ├─ memory_context     → 三层记忆上下文                             │       │
+│  │  ├─ route              → Supervisor 路由结果                        │       │
+│  │  ├─ rag_context        → RAG 检索上下文                            │       │
+│  │  ├─ rag_sources        → RAG 来源文件列表                          │       │
+│  │  ├─ tool_type          → 工具类型（local/api/mcp）                  │       │
+│  │  ├─ tool_error         → 工具调用错误信息                           │       │
+│  │  ├─ has_tool_calls     → 是否有工具调用                             │       │
+│  │  ├─ collaboration_data → Agent 间共享数据                          │       │
+│  │  ├─ current_agent      → 当前执行的 Agent                          │       │
+│  │  ├─ agent_history      → Agent 执行历史                            │       │
+│  │  ├─ needs_collaboration→ 是否需要其他 Agent 协作                    │       │
+│  │  ├─ collaboration_target→ 协作目标 Agent                           │       │
+│  │  ├─ collaboration_reason→ 协作原因                                 │       │
+│  │  ├─ task_decomposition → 任务分解结果                              │       │
+│  │  ├─ subtasks           → 子任务列表                                │       │
+│  │  ├─ current_subtask    → 当前子任务索引                             │       │
+│  │  ├─ reflection_notes   → 反思笔记                                  │       │
+│  │  ├─ key_decisions      → 关键决策记录                              │       │
+│  │  └─ iteration_count    → 当前迭代次数（防死循环）                    │       │
+│  └─────────────────────────────────────────────────────────────────────┘       │
+│                                                                                 │
+│  状态图节点清单（20个核心节点）:                                          │       │
+│  ├─ 记忆层：memory_node                                                  │       │
+│  ├─ 任务分解层：task_decomposition_node                                   │       │
+│  ├─ 监督层：supervisor_node, collaboration_decision_node                  │       │
+│  ├─ 反思层：reflection_node                                               │       │
+│  ├─ RAG层：agent_tech_rag, sights_rag, transport_rag, finance_rag, food_rag│    │
+│  ├─ Agent层：agent_tech, sights_agent, transport_agent, finance_agent, food_agent││
+│  ├─ 工具层：tool_selector, local_tools, api_tools, mcp_tools             │       │
+│  ├─ 处理层：tool_result_handler                                          │       │
+│  └─ 总结层：summary                                                      │       │
 │                                                                                 │
 └──────┬──────────────┬───────────────────────────────────────────────────────────┘
        │              │
@@ -400,7 +425,7 @@ ai-agent-lab/                    # 项目根目录
 |------|------|----------|------|
 | 第一层 | 接入层 | `static/index.html` | Web 前端（Markdown 渲染 + SSE 流式），API 网关统一收口 |
 | 第二层 | 服务接口层 | `src/api/server.py` | FastAPI 5 个端点：`/chat`、`/chat/stream`、`/session/new`、`/health`、`/llm/stats` |
-| 第三层 | Agent 编排层 | `src/agents/workflow.py` + `src/agents/experts/` | LangGraph 多 Agent 状态图，Supervisor 意图路由 + 6 条专业路径 |
+| 第三层 | Agent 编排层 | `src/agents/workflow.py` | LangGraph 多 Agent 状态图（17个核心节点），Supervisor 意图路由 + 5 条专业路径 + 工具调用循环 |
 | 第四层 | 基础设施服务层 | `src/llm/`、`src/rag/`、`src/memory/`、`src/tools/`、`src/prompts/`、`src/metrics/` | LLM Gateway、Embedding、RAG 引擎、记忆管理、Prompt 管理、工具注册表、监控指标 |
 | 第五层 | 外部依赖层 | — | 智谱 AI / DeepSeek / Ollama、PostgreSQL、ChromaDB、Open-Meteo |
 | 横切 | 横切关注点 | `src/config/`、`src/utils/logger.py` | 配置管理、可观测性（LangSmith + logging）、安全防护、部署运维 |
@@ -426,10 +451,14 @@ ai-agent-lab/                    # 项目根目录
 **位置**: `src/agents/`
 **核心功能**: 实现多 Agent 协作架构
 **模块组成**:
-- **workflow.py**: LangGraph 工作流引擎，包含 Supervisor 路由和多 Agent 协作
-  - 状态图编译缓存：首次编译后缓存，提升启动性能
-  - 工具调用重试：支持最多3次重试，指数退避等待（1-10秒）
-  - END节点路由：Agent可直接返回结果，无需强制走工具调用
+- **workflow.py**: LangGraph 工作流引擎，包含完整的状态机实现
+  - **状态定义**: AgentState（TypedDict），包含13个状态字段，支持多轮工具调用和 Agent 协作
+  - **核心节点**（17个）：memory、supervisor、5个RAG节点、5个Agent节点、工具选择器、3个工具执行节点、工具结果处理、总结
+  - **路由机制**: route_by_supervisor() 根据意图分类路由到对应专家
+  - **工具调用循环**: should_continue() 控制工具调用流程，iteration_count 防死循环
+  - **状态图编译缓存**: 使用 `_graph_compile_cache` 缓存编译结果，提升性能
+  - **工具调用重试**: 使用 tenacity 装饰器，最多3次重试，指数退避等待（1-10秒）
+  - **线程安全**: 使用 `asyncio.Lock` 保证并发安全
 - **experts/**: 专业领域 Agent 集合
   - `base.py`: 领域专家基类（DomainExpertAgent）和全局管理器（AgentManager）
   - `agent_tech.py`: AI Agent 开发专家
@@ -437,7 +466,6 @@ ai-agent-lab/                    # 项目根目录
   - `agent_food.py`: 美食推荐专家
   - `agent_transport.py`: 交通出行专家
   - `agent_finance.py`: 财务规划专家
-  - `agent_travel.py`: 旅游规划专家
 
 **架构特点**:
 - ✅ 简化架构：只保留 DomainExpertAgent 作为唯一基类
@@ -446,11 +474,13 @@ ai-agent-lab/                    # 项目根目录
 - ✅ 模块化设计：工作流引擎、Agent 基类、专业实现分离
 - ✅ 高性能：状态图编译结果缓存，避免重复编译
 - ✅ 高可用：工具调用重试机制，提升系统稳定性
+- ✅ 完整的工具调用循环：支持多轮工具调用，自动重试，错误处理
 
 **设计原则**:
 - ✅ 单一职责：每个模块有明确职责
-- ✅ 开闭原则：新增 Agent 类型只需在 experts/ 中添加新模块
+- ✅ 开闭原则：新增 Agent 类型只需在 workflow.py 中添加节点和路由
 - ✅ 依赖倒置：通过接口和配置管理依赖
+- ✅ 可观测性：完整的执行跟踪和错误处理（WorkflowLogger）
 
 ### 3. **tools/** - 统一工具系统
 **位置**: `src/tools/`
@@ -568,21 +598,56 @@ ai-agent-lab/                    # 项目根目录
 
 ## 多 Agent 状态图流转
 
+### 完整工作流架构
+
 ```
-START → memory_node → supervisor_node（LLM 意图分类）
-    ├── "agent_tech"   → agent_tech_rag_node   → agent_tech_node   → END
-    ├── "sights"       → sights_rag_node       → sights_node       → END
-    ├── "food"         → food_rag_node         → food_node         → END
-    ├── "transport"    → transport_rag_node    → transport_node     → END
-    ├── "finance"      → finance_rag_node      → finance_node      → END
-    └── "travel"       → travel_rag_node       → travel_node       → END
+START → memory_node → supervisor_node（DeepSeek LLM 意图分类）
+    │
+    └── route_by_supervisor() 路由到 5 条专业路径
+            │
+            ├── "agent_tech" → agent_tech_rag → agent_tech → should_continue
+            ├── "sights"     → sights_rag     → sights_agent → should_continue
+            ├── "transport"  → transport_rag  → transport_agent → should_continue
+            ├── "finance"    → finance_rag    → finance_agent → should_continue
+            └── "food"       → food_rag       → food_agent → should_continue
+                                    │
+              ┌─────────────────────┴─────────────────────┐
+              │                                           │
+              ▼                                           ▼
+        检测到工具调用                              无工具调用/到达迭代上限
+              │                                           │
+              ▼                                           ▼
+        tool_selector → [local_tools/api_tools/mcp_tools]
+              │                                           │
+              ▼                                           │
+        tool_result_handler → supervisor_node ◄───────────┘
+                                           │
+                                           ▼
+                                      summary → END
 ```
 
-- **Supervisor**：用 `temperature=0` 的 LLM 做意图分类，路由到 6 个专业 Expert Agent
-- **Agent 技术助手**：先走 RAG 检索 `knowledge_base_agent/` 知识库，再用 LLM 生成回答
-- **景点推荐助手**：先走 RAG 检索景点知识库，再用 LLM 生成回答
-- **美食推荐助手**：先走 RAG 检索美食知识库，再用 LLM 生成回答
-- **交通出行助手**：先走 RAG 检索交通知识库，再用 LLM 生成回答
+### 状态流转说明
+
+| 阶段 | 节点 | 职责 | 说明 |
+|------|------|------|------|
+| 1 | `memory_node` | 记忆处理 | 三层记忆：滑动窗口 + 摘要压缩 + 语义检索 |
+| 2 | `supervisor_node` | 意图路由 | 使用 DeepSeek LLM 进行意图分类，路由到对应专家 |
+| 3 | `*_rag_node` | RAG 检索 | 检索对应领域知识库，获取上下文和来源 |
+| 4 | `*_agent_node` | 响应生成 | 结合记忆和 RAG 上下文，生成回答（可能触发工具调用） |
+| 5 | `should_continue` | 循环控制 | 检测 tool_calls，决定继续调用工具或进入总结 |
+| 6 | `tool_selector` | 工具类型选择 | 根据工具名判断类型（local/api/mcp） |
+| 7 | `local_tools/api_tools/mcp_tools` | 工具执行 | 执行对应类型工具（支持重试机制） |
+| 8 | `tool_result_handler` | 结果处理 | 统一处理工具执行结果，错误处理 |
+| 9 | `summary` | 最终总结 | 生成最终回复 |
+
+### 核心特性
+
+- **Supervisor**：使用 DeepSeek LLM（非流式）做意图分类，路由到 5 个专业 Expert Agent
+- **工具调用循环**：支持多轮工具调用，通过 `iteration_count` 防止死循环
+- **工具类型支持**：本地工具、API 工具、MCP 工具三种类型
+- **重试机制**：工具调用失败自动重试（最多 3 次，指数退避 1-10 秒）
+- **状态缓存**：状态图编译结果缓存，提升性能
+- **线程安全**：使用 `asyncio.Lock` 保证并发安全
 - **财务规划助手**：先走 RAG 检索财务知识库，再用 LLM 生成回答
 - **旅游规划助手**：先走 RAG 检索 `knowledge_base_travel/` 知识库，再用 LLM 生成回答
 - **工具调用**：所有专家 Agent 都可以通过 `should_continue()` 调用工具（计算器、天气查询等）

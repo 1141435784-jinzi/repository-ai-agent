@@ -98,7 +98,7 @@ def reduce_bool(prev: bool, next: Optional[bool]) -> bool:
 # 第一步：状态定义（完全符合 LangGraph 规范）
 # ============================================================
 class AgentState(TypedDict):
-    """多 Agent 状态定义 - 支持多轮工具调用和 Agent 协作"""
+    """多 Agent 状态定义 - 支持多轮工具调用、Agent 协作、任务分解"""
     # 对话消息
     messages: Annotated[list, add_messages]
     trimmed_messages: Annotated[list, reduce_list]
@@ -116,6 +116,7 @@ class AgentState(TypedDict):
     # 工具调用状态
     tool_type: Annotated[str, reduce_str]  # local/api/mcp
     tool_error: Annotated[str, reduce_str]  # 工具调用错误信息
+    has_tool_calls: Annotated[bool, reduce_bool]  # 是否有工具调用
     
     # Agent 协作
     collaboration_data: Annotated[dict, reduce_dict]  # Agent 间共享数据
@@ -123,6 +124,16 @@ class AgentState(TypedDict):
     agent_history: Annotated[list, reduce_list]  # Agent 执行历史
     needs_collaboration: Annotated[bool, reduce_bool]  # 是否需要其他 Agent 协作
     collaboration_target: Annotated[str, reduce_str]  # 协作目标 Agent
+    collaboration_reason: Annotated[str, reduce_str]  # 协作原因
+    
+    # 任务分解
+    task_decomposition: Annotated[dict, reduce_dict]  # 任务分解结果
+    subtasks: Annotated[list, reduce_list]  # 子任务列表
+    current_subtask: Annotated[int, reduce_str]  # 当前执行的子任务索引
+    
+    # 反思总结
+    reflection_notes: Annotated[list, reduce_list]  # 反思笔记
+    key_decisions: Annotated[list, reduce_list]  # 关键决策记录
     
     # 迭代计数（用于防止死循环）
     iteration_count: Annotated[int, reduce_str]  # 当前迭代次数
@@ -510,6 +521,207 @@ async def transport_agent_node(state: AgentState, config: RunnableConfig) -> dic
 
 
 # ------------------------------
+# 任务分解节点（新增）
+# ------------------------------
+def task_decomposition_node(state: AgentState, config: RunnableConfig) -> dict:
+    """任务分解节点 - 将复杂任务分解为子任务"""
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+    workflow_logger.node_enter("task_decomposition", thread_id)
+    
+    try:
+        last_message = state["messages"][-1]
+        user_query = last_message.content if hasattr(last_message, "content") else ""
+        
+        # 分析任务复杂度
+        complexity_indicators = [
+            "和" in user_query and "并且" in user_query,
+            len(user_query) > 100,
+            "规划" in user_query or "安排" in user_query,
+            "先" in user_query and "再" in user_query,
+        ]
+        
+        if sum(complexity_indicators) >= 2:
+            # 复杂任务，进行分解
+            llm = get_llm(provider="deepseek", streaming=False)
+            
+            decomposition_prompt = f"""
+            请将以下用户请求分解为多个子任务：
+            
+            用户请求：{user_query}
+            
+            请输出JSON格式，包含以下字段：
+            - "is_complex": 是否为复杂任务（布尔值）
+            - "reason": 分解原因
+            - "subtasks": 子任务列表（每个子任务包含 "task" 和 "description"）
+            - "order": 子任务执行顺序说明
+            
+            示例输出：
+            {{
+                "is_complex": true,
+                "reason": "用户请求包含多个步骤",
+                "subtasks": [
+                    {{"task": "子任务1", "description": "描述..."}},
+                    {{"task": "子任务2", "description": "描述..."}}
+                ],
+                "order": "先执行子任务1，再执行子任务2"
+            }}
+            """
+            
+            resp = llm.invoke(decomposition_prompt)
+            try:
+                decomposition = json.loads(resp.content)
+            except:
+                decomposition = {
+                    "is_complex": False,
+                    "reason": "解析失败，视为简单任务",
+                    "subtasks": [],
+                    "order": ""
+                }
+            
+            if decomposition.get("is_complex") and decomposition.get("subtasks"):
+                workflow_logger.logger.info(f"🔍 [{thread_id[:8]}] 任务分解完成: {len(decomposition['subtasks'])} 个子任务")
+                workflow_logger.node_exit("task_decomposition", thread_id, "复杂任务已分解")
+                return {
+                    "task_decomposition": decomposition,
+                    "subtasks": decomposition["subtasks"],
+                    "current_subtask": 0,
+                }
+        
+        # 简单任务，不需要分解
+        workflow_logger.node_exit("task_decomposition", thread_id, "简单任务，无需分解")
+        return {"task_decomposition": {"is_complex": False}}
+        
+    except Exception as e:
+        workflow_logger.error(thread_id, "task_decomposition", e)
+        return {"task_decomposition": {"is_complex": False}}
+
+
+# ------------------------------
+# Agent 协作决策节点（新增）
+# ------------------------------
+def collaboration_decision_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Agent 协作决策节点 - 判断是否需要其他 Agent 协作或工具调用"""
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+    workflow_logger.node_enter("collaboration_decision", thread_id)
+    
+    try:
+        last_message = state["messages"][-1]
+        content = last_message.content if hasattr(last_message, "content") else ""
+        
+        # 检查是否有工具调用
+        has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
+        if has_tool_calls:
+            # 确保 tool_calls 是有效的列表
+            is_valid_tool_call = isinstance(last_message.tool_calls, list) and len(last_message.tool_calls) > 0
+            if not is_valid_tool_call:
+                is_valid_tool_call = last_message.tool_calls is not None
+        
+        # 检查是否提到其他领域
+        collaboration_triggers = {
+            "sights": ["景点", "景区", "旅游", "风景"],
+            "transport": ["交通", "高铁", "航班", "地铁", "公交"],
+            "finance": ["预算", "费用", "价格", "财务"],
+            "food": ["美食", "餐厅", "吃饭", "推荐菜"],
+        }
+        
+        current_agent = state.get("current_agent", "")
+        needs_collaboration = False
+        target_agent = ""
+        reason = ""
+        
+        # 检查当前 Agent 是否需要其他 Agent 的帮助
+        for agent, triggers in collaboration_triggers.items():
+            if agent != current_agent:  # 不是当前 Agent
+                if any(trigger in content for trigger in triggers):
+                    needs_collaboration = True
+                    target_agent = agent
+                    reason = f"当前 Agent ({current_agent}) 需要 {agent} Agent 的专业知识"
+                    break
+        
+        # 检查任务分解是否需要多 Agent 协作
+        subtasks = state.get("subtasks", [])
+        if subtasks and len(subtasks) > 1:
+            # 多子任务可能需要协作
+            needs_collaboration = True
+            target_agent = "supervisor"
+            reason = "多子任务需要协作处理"
+        
+        workflow_logger.logger.info(f"🤝 [{thread_id[:8]}] 协作决策: {needs_collaboration} -> {target_agent}, 工具调用: {has_tool_calls}")
+        workflow_logger.node_exit("collaboration_decision", thread_id, 
+                                  f"协作需求: {needs_collaboration}, 目标: {target_agent}")
+        
+        return {
+            "needs_collaboration": needs_collaboration,
+            "collaboration_target": target_agent,
+            "collaboration_reason": reason,
+            "has_tool_calls": has_tool_calls
+        }
+        
+    except Exception as e:
+        workflow_logger.error(thread_id, "collaboration_decision", e)
+        return {
+            "needs_collaboration": False,
+            "collaboration_target": "",
+            "collaboration_reason": "",
+            "has_tool_calls": False
+        }
+
+
+# ------------------------------
+# 反思节点（新增）
+# ------------------------------
+def reflection_node(state: AgentState, config: RunnableConfig) -> dict:
+    """反思节点 - 回顾对话历史，记录关键决策和反思"""
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+    workflow_logger.node_enter("reflection", thread_id)
+    
+    try:
+        messages = state["messages"]
+        agent_history = state.get("agent_history", [])
+        key_decisions = []
+        reflection_notes = []
+        
+        # 分析对话历史，提取关键决策
+        for i, msg in enumerate(messages):
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                tool_calls = msg.tool_calls if isinstance(msg.tool_calls, list) else [msg.tool_calls]
+                for tc in tool_calls:
+                    tool_name = tc.get("name", "unknown") if isinstance(tc, dict) else str(tc)
+                    key_decisions.append({
+                        "step": i,
+                        "decision_type": "tool_call",
+                        "tool_name": tool_name,
+                        "args": tc.get("args", {}) if isinstance(tc, dict) else {}
+                    })
+        
+        # 分析 Agent 执行历史
+        if agent_history:
+            reflection_notes.append(f"执行过的 Agent: {', '.join(agent_history)}")
+        
+        # 分析工具调用错误
+        tool_error = state.get("tool_error", "")
+        if tool_error:
+            reflection_notes.append(f"工具调用失败: {tool_error}")
+        
+        # 分析任务分解结果
+        task_decomp = state.get("task_decomposition", {})
+        if task_decomp.get("is_complex"):
+            reflection_notes.append(f"复杂任务分解为 {len(task_decomp.get('subtasks', []))} 个子任务")
+        
+        workflow_logger.logger.info(f"💭 [{thread_id[:8]}] 反思完成: {len(key_decisions)} 个关键决策")
+        workflow_logger.node_exit("reflection", thread_id, "反思完成")
+        
+        return {
+            "key_decisions": key_decisions,
+            "reflection_notes": reflection_notes
+        }
+        
+    except Exception as e:
+        workflow_logger.error(thread_id, "reflection", e)
+        return {"key_decisions": [], "reflection_notes": []}
+
+
+# ------------------------------
 # 带重试机制的工具调用辅助函数
 # ------------------------------
 @retry(
@@ -780,6 +992,39 @@ def route_back_to_agent(state: AgentState) -> str:
     return "agent_tech"
 
 
+# ------------------------------
+# 协作路由函数（新增）
+# ------------------------------
+def route_to_collaboration_target(state: AgentState) -> str:
+    """根据协作决策路由到目标 Agent"""
+    target = state.get("collaboration_target", "")
+    if target == "sights":
+        return "sights_rag"
+    elif target == "transport":
+        return "transport_rag"
+    elif target == "finance":
+        return "finance_rag"
+    elif target == "food":
+        return "food_rag"
+    elif target == "supervisor":
+        return "supervisor"
+    return "summary"
+
+
+def collaboration_or_tool_decision(state: AgentState) -> Literal["tool_selector", "supervisor", "reflection"]:
+    """协作和工具调用决策路由"""
+    # 优先检查工具调用
+    if state.get("has_tool_calls", False):
+        return "tool_selector"
+    
+    # 然后检查协作需求
+    if state.get("needs_collaboration", False):
+        return "supervisor"
+    
+    # 不需要工具调用和协作，进行反思总结
+    return "reflection"
+
+
 # ============================================================
 # 第四步：构建流程图（企业级架构）
 # ============================================================
@@ -790,6 +1035,11 @@ def _build_graph() -> StateGraph:
     # 核心节点 - 记忆和监督者
     g.add_node("memory", memory_node)
     g.add_node("supervisor", supervisor_node)
+    
+    # 新增节点 - 任务分解和协作
+    g.add_node("task_decomposition", task_decomposition_node)
+    g.add_node("collaboration_decision", collaboration_decision_node)
+    g.add_node("reflection", reflection_node)
     
     # 核心节点 - Agent技术专家
     g.add_node("agent_tech_rag", agent_tech_rag_node)
@@ -821,9 +1071,10 @@ def _build_graph() -> StateGraph:
     # 总结节点
     g.add_node("summary", summary_node)
 
-    # 主线流程
+    # 主线流程：START -> memory -> task_decomposition -> supervisor
     g.add_edge(START, "memory")
-    g.add_edge("memory", "supervisor")
+    g.add_edge("memory", "task_decomposition")
+    g.add_edge("task_decomposition", "supervisor")
 
     # 路由分支：supervisor -> RAG -> Agent
     g.add_conditional_edges(
@@ -845,52 +1096,31 @@ def _build_graph() -> StateGraph:
     g.add_edge("finance_rag", "finance_agent")
     g.add_edge("food_rag", "food_agent")
 
-    # Agent 决策：是否调用工具
+    # Agent 决策：先判断协作需求和工具调用
+    g.add_edge("agent_tech", "collaboration_decision")
+    g.add_edge("sights_agent", "collaboration_decision")
+    g.add_edge("transport_agent", "collaboration_decision")
+    g.add_edge("finance_agent", "collaboration_decision")
+    g.add_edge("food_agent", "collaboration_decision")
+    
+    # 协作决策路由：工具调用 > 协作 > 反思总结
     g.add_conditional_edges(
-        "agent_tech",
-        should_continue,
+        "collaboration_decision",
+        collaboration_or_tool_decision,
         {
-            "tool_selector": "tool_selector",
-            "summary": "summary",
+            "tool_selector": "tool_selector",      # 需要工具调用
+            "supervisor": "supervisor",            # 需要 Agent 协作
+            "reflection": "reflection",            # 不需要工具和协作，进行反思总结
         }
     )
-    g.add_conditional_edges(
-        "sights_agent",
-        should_continue,
-        {
-            "tool_selector": "tool_selector",
-            "summary": "summary",
-        }
-    )
-    g.add_conditional_edges(
-        "transport_agent",
-        should_continue,
-        {
-            "tool_selector": "tool_selector",
-            "summary": "summary",
-        }
-    )
-    g.add_conditional_edges(
-        "finance_agent",
-        should_continue,
-        {
-            "tool_selector": "tool_selector",
-            "summary": "summary",
-        }
-    )
-    g.add_conditional_edges(
-        "food_agent",
-        should_continue,
-        {
-            "tool_selector": "tool_selector",
-            "summary": "summary",
-        }
-    )
+    
+    # 反思节点 -> 总结节点
+    g.add_edge("reflection", "summary")
 
     # 工具选择器 -> 按类型执行
     g.add_conditional_edges(
         "tool_selector",
-        lambda state: state.get("tool_type", "local_tools"),  # 从状态中获取 tool_type
+        lambda state: state.get("tool_type", "local_tools"),
         {
             "local_tools": "local_tools",
             "api_tools": "api_tools",
@@ -898,11 +1128,11 @@ def _build_graph() -> StateGraph:
         }
     )
 
-    # 工具执行完成 -> 结果处理 -> 回到 supervisor 进行路由决策
+    # 工具执行完成 -> 结果处理 -> collaboration_decision（检查是否需要继续协作）
     g.add_edge("local_tools", "tool_result_handler")
     g.add_edge("api_tools", "tool_result_handler")
     g.add_edge("mcp_tools", "tool_result_handler")
-    g.add_edge("tool_result_handler", "supervisor")
+    g.add_edge("tool_result_handler", "collaboration_decision")
 
     # 总结 -> 结束
     g.add_edge("summary", END)
