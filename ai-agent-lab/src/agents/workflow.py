@@ -48,7 +48,7 @@ from src.config import (
     KNOWLEDGE_BASE_FOOD_DIR,
 )
 from src.memory import get_async_checkpointer, get_memory_manager
-from src.llm.service import get_llm
+from src.llm.gateway import get_llm
 from src.prompts import AGENT_PROMPT, SUPERVISOR_PROMPT, TRAVEL_TECH_PROMPT, SIGHTS_PROMPT, FOOD_PROMPT, TRANSPORT_PROMPT, FINANCE_PROMPT
 from src.rag.engine import RAGEngine
 from src.tools.tool_manager import tool_manager

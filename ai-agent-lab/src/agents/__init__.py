@@ -24,7 +24,7 @@
 # ============================================================
 # Agent 基类和管理器
 # ============================================================
-from .specialist.base import (
+from .experts.base import (
     DomainSpecialistAgent,
     AgentManager,
     agent_manager,

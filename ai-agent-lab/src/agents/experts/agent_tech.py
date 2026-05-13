@@ -1,54 +1,56 @@
 """
-=== 景点推荐专家 ===
+=== AI Agent 开发专家 ===
 
 【功能】：
-1. 基于 Sights 知识库回答景点相关问题
+1. 基于 Agent 开发知识库回答技术问题
 2. 使用 RAG 检索相关知识
-3. 专注于城市景点介绍和旅游攻略
-4. 支持工具调用（地图导航、天气查询等）
+3. 专注于 AI Agent 开发领域
+4. 支持工具调用（计算、搜索等辅助工具）
 
 【专业领域】：
-- 国内外著名景点介绍
-- 景点历史文化背景
-- 景点门票、开放时间、交通指南
-- 景点游玩攻略和最佳游览路线
-- 景点周边配套设施推荐
-- 季节性景点推荐和避坑指南
+- AI Agent 架构设计
+- LLM 集成与优化
+- RAG 检索增强生成
+- LangChain/LangGraph 框架
+- Prompt 工程
+- 向量数据库与 Embedding
+- 多 Agent 协作系统
 """
 
 from typing import Dict, Any, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.llm.service import get_llm
-from src.prompts import SIGHTS_PROMPT
-from src.config import KNOWLEDGE_BASE_SIGHTS_DIR
-from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
+from src.llm.gateway import get_llm
+from src.prompts import AGENT_PROMPT
+from src.config import KNOWLEDGE_BASE_DIR
+from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class SightsSpecialist(DomainSpecialistAgent):
-    """景点推荐专家 - 继承自领域专家基类"""
+class AgentTechSpecialist(DomainSpecialistAgent):
+    """AI Agent 开发专家 - 继承自领域专家基类"""
     
     def __init__(self):
-        """初始化景点推荐专家"""
+        """初始化 AI Agent 开发专家"""
         super().__init__(
-            name="sights",
-            description="城市景点推荐专家",
+            name="agent_tech",
+            description="AI Agent 开发技术专家",
             capabilities=[
-                "著名景点介绍",
-                "景点历史文化背景",
-                "门票和开放时间",
-                "游玩攻略和路线规划",
-                "周边配套设施推荐",
-                "季节性景点推荐"
+                "AI Agent 架构设计",
+                "LLM 集成与优化", 
+                "RAG 检索增强生成",
+                "LangChain/LangGraph 框架",
+                "Prompt 工程",
+                "向量数据库与 Embedding",
+                "多 Agent 协作系统"
             ],
-            knowledge_dir=KNOWLEDGE_BASE_SIGHTS_DIR,
-            collection_name="sights_knowledge"
+            knowledge_dir=KNOWLEDGE_BASE_DIR,
+            collection_name="agent_knowledge"
         )
         self.llm = get_llm()
     
     async def initialize(self) -> None:
-        """初始化景点推荐专家"""
+        """初始化 AI Agent 开发专家"""
         if self._initialized:
             return
         
@@ -79,14 +81,14 @@ class SightsSpecialist(DomainSpecialistAgent):
         Returns:
             Dict[str, Any]: 处理结果
         """
-        print(f"🏛️ 景点推荐专家处理中: '{query[:30]}...'")
+        print(f"🤖 AI Agent 专家处理中: '{query[:30]}...'")
         
         # RAG 检索
-        print(f"🏛️ 景点知识 RAG: 正在检索 '{query[:30]}...'")
+        print(f"📚 AI Agent RAG: 正在检索 '{query[:30]}...'")
         rag_result = await self.query_rag(query)
         
         # 构建提示
-        prompt_messages = SIGHTS_PROMPT.invoke(
+        prompt_messages = AGENT_PROMPT.invoke(
             {"messages": [HumanMessage(content=query)]}
         )
         
@@ -127,29 +129,29 @@ class SightsSpecialist(DomainSpecialistAgent):
             "sources": rag_result.get("sources", []),
             "found_in_kb": rag_result["found"],
             "metadata": {
-                "domain": "sightseeing",
+                "domain": "ai_agent_development",
                 "expertise_level": "expert",
-                "response_type": "sight_advice"
+                "response_type": "technical_advice"
             }
         }
 
 
-# 全局景点推荐专家实例
-_sights_specialist = None
+# 全局 AI Agent 开发专家实例
+_agent_tech_specialist = None
 
 
-def get_sights_specialist() -> SightsSpecialist:
-    """获取全局景点推荐专家实例"""
-    global _sights_specialist
-    if _sights_specialist is None:
-        _sights_specialist = SightsSpecialist()
+def get_agent_tech_specialist() -> AgentTechSpecialist:
+    """获取全局 AI Agent 开发专家实例"""
+    global _agent_tech_specialist
+    if _agent_tech_specialist is None:
+        _agent_tech_specialist = AgentTechSpecialist()
         # 注册到Agent管理器
-        agent_manager.register_agent(_sights_specialist)
-    return _sights_specialist
+        agent_manager.register_agent(_agent_tech_specialist)
+    return _agent_tech_specialist
 
 
 # 导出接口
 __all__ = [
-    "SightsSpecialist",
-    "get_sights_specialist",
+    "AgentTechSpecialist",
+    "get_agent_tech_specialist",
 ]

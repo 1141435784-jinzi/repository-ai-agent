@@ -1,54 +1,54 @@
 """
-=== 美食推荐专家 ===
+=== 交通出行专家 ===
 
 【功能】：
-1. 基于 Food 知识库回答美食相关问题
+1. 基于 Transport 知识库回答交通相关问题
 2. 使用 RAG 检索相关知识
-3. 专注于美食推荐和餐厅介绍
-4. 支持工具调用（地图导航、价格查询等）
+3. 专注于交通出行规划和票务信息
+4. 支持工具调用（航班查询、火车票查询等）
 
 【专业领域】：
-- 目的地特色美食推荐
-- 当地知名餐厅和街头美食
-- 美食文化背景介绍
-- 餐厅预订和用餐建议
-- 美食路线规划和美食地图
-- 不同预算和口味偏好的推荐
+- 航班信息查询和机票预订建议
+- 高铁/火车时刻表查询和购票指南
+- 城市地铁线路规划和换乘指引
+- 机场、车站交通接驳信息
+- 不同交通方式对比和选择建议
+- 出行时间优化和避峰指南
 """
 
 from typing import Dict, Any, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.llm.service import get_llm
-from src.prompts import FOOD_PROMPT
-from src.config import KNOWLEDGE_BASE_FOOD_DIR
-from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
+from src.llm.gateway import get_llm
+from src.prompts import TRANSPORT_PROMPT
+from src.config import KNOWLEDGE_BASE_TRANSPORT_DIR
+from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class FoodSpecialist(DomainSpecialistAgent):
-    """美食推荐专家 - 继承自领域专家基类"""
+class TransportSpecialist(DomainSpecialistAgent):
+    """交通出行专家 - 继承自领域专家基类"""
     
     def __init__(self):
-        """初始化美食推荐专家"""
+        """初始化交通出行专家"""
         super().__init__(
-            name="food",
-            description="美食推荐专家",
+            name="transport",
+            description="交通出行专家",
             capabilities=[
-                "特色美食推荐",
-                "知名餐厅介绍",
-                "美食文化背景",
-                "用餐建议和预订",
-                "美食路线规划",
-                "预算和口味推荐"
+                "航班信息查询",
+                "高铁/火车时刻表",
+                "城市地铁线路规划",
+                "机场车站接驳",
+                "交通方式对比",
+                "出行时间优化"
             ],
-            knowledge_dir=KNOWLEDGE_BASE_FOOD_DIR,
-            collection_name="food_knowledge"
+            knowledge_dir=KNOWLEDGE_BASE_TRANSPORT_DIR,
+            collection_name="transport_knowledge"
         )
         self.llm = get_llm()
     
     async def initialize(self) -> None:
-        """初始化美食推荐专家"""
+        """初始化交通出行专家"""
         if self._initialized:
             return
         
@@ -79,14 +79,14 @@ class FoodSpecialist(DomainSpecialistAgent):
         Returns:
             Dict[str, Any]: 处理结果
         """
-        print(f"🍜 美食推荐专家处理中: '{query[:30]}...'")
+        print(f"🚄 交通出行专家处理中: '{query[:30]}...'")
         
         # RAG 检索
-        print(f"🍜 美食知识 RAG: 正在检索 '{query[:30]}...'")
+        print(f"🚄 交通知识 RAG: 正在检索 '{query[:30]}...'")
         rag_result = await self.query_rag(query)
         
         # 构建提示
-        prompt_messages = FOOD_PROMPT.invoke(
+        prompt_messages = TRANSPORT_PROMPT.invoke(
             {"messages": [HumanMessage(content=query)]}
         )
         
@@ -127,29 +127,29 @@ class FoodSpecialist(DomainSpecialistAgent):
             "sources": rag_result.get("sources", []),
             "found_in_kb": rag_result["found"],
             "metadata": {
-                "domain": "food_recommendation",
+                "domain": "transportation",
                 "expertise_level": "expert",
-                "response_type": "food_advice"
+                "response_type": "transport_advice"
             }
         }
 
 
-# 全局美食推荐专家实例
-_food_specialist = None
+# 全局交通出行专家实例
+_transport_specialist = None
 
 
-def get_food_specialist() -> FoodSpecialist:
-    """获取全局美食推荐专家实例"""
-    global _food_specialist
-    if _food_specialist is None:
-        _food_specialist = FoodSpecialist()
+def get_transport_specialist() -> TransportSpecialist:
+    """获取全局交通出行专家实例"""
+    global _transport_specialist
+    if _transport_specialist is None:
+        _transport_specialist = TransportSpecialist()
         # 注册到Agent管理器
-        agent_manager.register_agent(_food_specialist)
-    return _food_specialist
+        agent_manager.register_agent(_transport_specialist)
+    return _transport_specialist
 
 
 # 导出接口
 __all__ = [
-    "FoodSpecialist",
-    "get_food_specialist",
+    "TransportSpecialist",
+    "get_transport_specialist",
 ]

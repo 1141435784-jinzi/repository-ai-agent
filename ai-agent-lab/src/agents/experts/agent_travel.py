@@ -1,54 +1,56 @@
 """
-=== 交通出行专家 ===
+=== 旅游规划专家 ===
 
 【功能】：
-1. 基于 Transport 知识库回答交通相关问题
+1. 基于 Travel 知识库回答旅游问题
 2. 使用 RAG 检索相关知识
-3. 专注于交通出行规划和票务信息
-4. 支持工具调用（航班查询、火车票查询等）
+3. 专注于旅游规划咨询领域
+4. 支持工具调用（天气查询、地图导航、价格比较等）
 
 【专业领域】：
-- 航班信息查询和机票预订建议
-- 高铁/火车时刻表查询和购票指南
-- 城市地铁线路规划和换乘指引
-- 机场、车站交通接驳信息
-- 不同交通方式对比和选择建议
-- 出行时间优化和避峰指南
+- 国内外旅游目的地推荐
+- 旅行路线规划与行程安排
+- 酒店、机票、签证等旅行预订信息
+- 当地文化、美食、景点介绍
+- 旅行安全注意事项和实用贴士
+- 预算规划与成本控制
+- 季节性旅游建议
 """
 
 from typing import Dict, Any, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.llm.service import get_llm
-from src.prompts import TRANSPORT_PROMPT
-from src.config import KNOWLEDGE_BASE_TRANSPORT_DIR
-from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
+from src.llm.gateway import get_llm
+from src.prompts import TRAVEL_TECH_PROMPT
+from src.config import KNOWLEDGE_BASE_SIGHTS_DIR
+from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class TransportSpecialist(DomainSpecialistAgent):
-    """交通出行专家 - 继承自领域专家基类"""
+class TravelSpecialist(DomainSpecialistAgent):
+    """旅游规划专家 - 继承自领域专家基类"""
     
     def __init__(self):
-        """初始化交通出行专家"""
+        """初始化旅游规划专家"""
         super().__init__(
-            name="transport",
-            description="交通出行专家",
+            name="travel",
+            description="旅游规划咨询专家",
             capabilities=[
-                "航班信息查询",
-                "高铁/火车时刻表",
-                "城市地铁线路规划",
-                "机场车站接驳",
-                "交通方式对比",
-                "出行时间优化"
+                "旅游目的地推荐",
+                "旅行路线规划",
+                "酒店机票预订咨询",
+                "签证与出入境政策",
+                "当地文化与美食介绍",
+                "旅行安全与贴士",
+                "预算规划与成本控制"
             ],
-            knowledge_dir=KNOWLEDGE_BASE_TRANSPORT_DIR,
-            collection_name="transport_knowledge"
+            knowledge_dir=KNOWLEDGE_BASE_SIGHTS_DIR,
+            collection_name="travel_knowledge"
         )
         self.llm = get_llm()
     
     async def initialize(self) -> None:
-        """初始化交通出行专家"""
+        """初始化旅游规划专家"""
         if self._initialized:
             return
         
@@ -79,14 +81,14 @@ class TransportSpecialist(DomainSpecialistAgent):
         Returns:
             Dict[str, Any]: 处理结果
         """
-        print(f"🚄 交通出行专家处理中: '{query[:30]}...'")
+        print(f"✈️ 旅游规划专家处理中: '{query[:30]}...'")
         
         # RAG 检索
-        print(f"🚄 交通知识 RAG: 正在检索 '{query[:30]}...'")
+        print(f"✈️ 旅游知识 RAG: 正在检索 '{query[:30]}...'")
         rag_result = await self.query_rag(query)
         
         # 构建提示
-        prompt_messages = TRANSPORT_PROMPT.invoke(
+        prompt_messages = TRAVEL_TECH_PROMPT.invoke(
             {"messages": [HumanMessage(content=query)]}
         )
         
@@ -127,29 +129,29 @@ class TransportSpecialist(DomainSpecialistAgent):
             "sources": rag_result.get("sources", []),
             "found_in_kb": rag_result["found"],
             "metadata": {
-                "domain": "transportation",
+                "domain": "travel_planning",
                 "expertise_level": "expert",
-                "response_type": "transport_advice"
+                "response_type": "travel_advice"
             }
         }
 
 
-# 全局交通出行专家实例
-_transport_specialist = None
+# 全局旅游规划专家实例
+_travel_specialist = None
 
 
-def get_transport_specialist() -> TransportSpecialist:
-    """获取全局交通出行专家实例"""
-    global _transport_specialist
-    if _transport_specialist is None:
-        _transport_specialist = TransportSpecialist()
+def get_travel_specialist() -> TravelSpecialist:
+    """获取全局旅游规划专家实例"""
+    global _travel_specialist
+    if _travel_specialist is None:
+        _travel_specialist = TravelSpecialist()
         # 注册到Agent管理器
-        agent_manager.register_agent(_transport_specialist)
-    return _transport_specialist
+        agent_manager.register_agent(_travel_specialist)
+    return _travel_specialist
 
 
 # 导出接口
 __all__ = [
-    "TransportSpecialist",
-    "get_transport_specialist",
+    "TravelSpecialist",
+    "get_travel_specialist",
 ]

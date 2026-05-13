@@ -11,7 +11,7 @@
 """
 
 from .conversation import ConversationMemoryManager
-from .state import get_async_checkpointer
+from .checkpointer import get_async_checkpointer
 
 # 全局记忆管理器实例
 _memory_manager = None

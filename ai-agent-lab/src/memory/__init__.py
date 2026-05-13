@@ -22,7 +22,7 @@ await close_async_pool()
 
 【模块】：
 - conversation.py: 对话记忆管理
-- state.py: 状态记忆和检查点
+- checkpointer.py: 状态记忆和检查点（基于 PostgreSQL AsyncPostgresSaver）
 - manager.py: 记忆系统管理器
 """
 
@@ -31,7 +31,7 @@ from .manager import (
     get_async_checkpointer,
     ConversationMemoryManager,
 )
-from .state import close_async_pool
+from .checkpointer import close_async_pool
 
 # 导出列表
 __all__ = [

@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass, field
 
 from src.config import TEMPERATURE
-from src.llm.service import get_llm
+from src.llm.gateway import get_llm
 
 logger = logging.getLogger(__name__)
 

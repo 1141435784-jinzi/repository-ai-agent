@@ -1,56 +1,54 @@
 """
-=== AI Agent 开发专家 ===
+=== 财务规划专家 ===
 
 【功能】：
-1. 基于 Agent 开发知识库回答技术问题
+1. 基于 Finance 知识库回答财务相关问题
 2. 使用 RAG 检索相关知识
-3. 专注于 AI Agent 开发领域
-4. 支持工具调用（计算、搜索等辅助工具）
+3. 专注于旅行预算规划和费用计算
+4. 支持工具调用（汇率查询、预算计算器等）
 
 【专业领域】：
-- AI Agent 架构设计
-- LLM 集成与优化
-- RAG 检索增强生成
-- LangChain/LangGraph 框架
-- Prompt 工程
-- 向量数据库与 Embedding
-- 多 Agent 协作系统
+- 旅行预算规划与费用估算
+- 交通、住宿、餐饮等各项费用分析
+- 货币换算和汇率查询
+- 旅行保险和费用优化建议
+- 不同消费水平的预算方案
+- 旅行财务安全和风险提示
 """
 
 from typing import Dict, Any, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.llm.service import get_llm
-from src.prompts import AGENT_PROMPT
-from src.config import KNOWLEDGE_BASE_DIR
-from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
+from src.llm.gateway import get_llm
+from src.prompts import FINANCE_PROMPT
+from src.config import KNOWLEDGE_BASE_FINANCE_DIR
+from src.agents.experts.base import DomainSpecialistAgent, agent_manager
 
 
-class AgentTechSpecialist(DomainSpecialistAgent):
-    """AI Agent 开发专家 - 继承自领域专家基类"""
+class FinanceSpecialist(DomainSpecialistAgent):
+    """财务规划专家 - 继承自领域专家基类"""
     
     def __init__(self):
-        """初始化 AI Agent 开发专家"""
+        """初始化财务规划专家"""
         super().__init__(
-            name="agent_tech",
-            description="AI Agent 开发技术专家",
+            name="finance",
+            description="财务规划专家",
             capabilities=[
-                "AI Agent 架构设计",
-                "LLM 集成与优化", 
-                "RAG 检索增强生成",
-                "LangChain/LangGraph 框架",
-                "Prompt 工程",
-                "向量数据库与 Embedding",
-                "多 Agent 协作系统"
+                "旅行预算规划",
+                "费用估算和分析",
+                "货币换算和汇率",
+                "旅行保险建议",
+                "费用优化方案",
+                "财务安全提示"
             ],
-            knowledge_dir=KNOWLEDGE_BASE_DIR,
-            collection_name="agent_knowledge"
+            knowledge_dir=KNOWLEDGE_BASE_FINANCE_DIR,
+            collection_name="finance_knowledge"
         )
         self.llm = get_llm()
     
     async def initialize(self) -> None:
-        """初始化 AI Agent 开发专家"""
+        """初始化财务规划专家"""
         if self._initialized:
             return
         
@@ -81,14 +79,14 @@ class AgentTechSpecialist(DomainSpecialistAgent):
         Returns:
             Dict[str, Any]: 处理结果
         """
-        print(f"🤖 AI Agent 专家处理中: '{query[:30]}...'")
+        print(f"💰 财务规划专家处理中: '{query[:30]}...'")
         
         # RAG 检索
-        print(f"📚 AI Agent RAG: 正在检索 '{query[:30]}...'")
+        print(f"💰 财务知识 RAG: 正在检索 '{query[:30]}...'")
         rag_result = await self.query_rag(query)
         
         # 构建提示
-        prompt_messages = AGENT_PROMPT.invoke(
+        prompt_messages = FINANCE_PROMPT.invoke(
             {"messages": [HumanMessage(content=query)]}
         )
         
@@ -129,29 +127,29 @@ class AgentTechSpecialist(DomainSpecialistAgent):
             "sources": rag_result.get("sources", []),
             "found_in_kb": rag_result["found"],
             "metadata": {
-                "domain": "ai_agent_development",
+                "domain": "finance_planning",
                 "expertise_level": "expert",
-                "response_type": "technical_advice"
+                "response_type": "finance_advice"
             }
         }
 
 
-# 全局 AI Agent 开发专家实例
-_agent_tech_specialist = None
+# 全局财务规划专家实例
+_finance_specialist = None
 
 
-def get_agent_tech_specialist() -> AgentTechSpecialist:
-    """获取全局 AI Agent 开发专家实例"""
-    global _agent_tech_specialist
-    if _agent_tech_specialist is None:
-        _agent_tech_specialist = AgentTechSpecialist()
+def get_finance_specialist() -> FinanceSpecialist:
+    """获取全局财务规划专家实例"""
+    global _finance_specialist
+    if _finance_specialist is None:
+        _finance_specialist = FinanceSpecialist()
         # 注册到Agent管理器
-        agent_manager.register_agent(_agent_tech_specialist)
-    return _agent_tech_specialist
+        agent_manager.register_agent(_finance_specialist)
+    return _finance_specialist
 
 
 # 导出接口
 __all__ = [
-    "AgentTechSpecialist",
-    "get_agent_tech_specialist",
+    "FinanceSpecialist",
+    "get_finance_specialist",
 ]

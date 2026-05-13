@@ -33,7 +33,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.config import CHROMA_DB_DIR
 from src.rag.embedding import get_embeddings
-from src.llm.service import get_llm
+from src.llm.gateway import get_llm
 
 logger = logging.getLogger(__name__)
 

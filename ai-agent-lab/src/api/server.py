@@ -39,7 +39,7 @@ from src.agents import get_async_agent
 from src.config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, MAX_ITERATIONS
 from src.memory import get_async_checkpointer, close_async_pool
 from src.prompts import sanitize_input, sanitize_output
-from src.llm.service import get_call_stats
+from src.llm.gateway import get_call_stats
 from src.utils.logger import setup_logging, get_logger, WorkflowLogger
 
 # ============================================================

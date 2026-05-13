@@ -153,7 +153,7 @@
 │  │  }                                                                  │       │
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │
-│  专业 Agent 实现（src/agents/specialist/）:                                    │       │
+│  专业 Agent 实现（src/agents/experts/）:                                    │       │
 │  ├─ agent_tech.py   — Agent 技术专家                                        │       │
 │  └─ agent_travel.py — 旅游规划专家                                         │       │
 │                                                                                 │
@@ -170,7 +170,7 @@
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐│
 │  │                │  │                │  │                │  │                ││
 │  │ LLM Gateway   │  │ Embedding 服务  │  │  RAG 引擎      │  │  记忆管理       ││
-│  │ llm/service.py│  │ rag/embedding. │  │  rag/engine.py │  │                ││
+│  │ llm/gateway.py  │  │ rag/embedding. │  │  rag/engine.py │  │                ││
 │  │                │  │  py            │  │                │  │ ┌────────────┐ ││
 │  │ 多 Provider   │  │                │  │ 支持多知识库：  │  │ │Manager     │ ││
 │  │  路由：       │  │ 全局单例        │  │                │  │ │memory/     │ ││
@@ -366,7 +366,7 @@ ai-agent-lab/                    # 项目根目录
 |------|------|----------|------|
 | 第一层 | 接入层 | `static/index.html` | Web 前端（Markdown 渲染 + SSE 流式），API 网关统一收口 |
 | 第二层 | 服务接口层 | `src/api/server.py` | FastAPI 5 个端点：`/chat`、`/chat/stream`、`/session/new`、`/health`、`/llm/stats` |
-| 第三层 | Agent 编排层 | `src/agents/workflow.py` + `src/agents/specialist/` | LangGraph 多 Agent 状态图，Supervisor 意图路由 + 2 条专业路径 |
+| 第三层 | Agent 编排层 | `src/agents/workflow.py` + `src/agents/experts/` | LangGraph 多 Agent 状态图，Supervisor 意图路由 + 2 条专业路径 |
 | 第四层 | 基础设施服务层 | `src/llm/`、`src/rag/`、`src/memory/`、`src/tools/`、`src/prompts/`、`src/monitoring/` | LLM Gateway、Embedding、RAG 引擎、记忆管理、Prompt 管理、工具注册表、监控指标 |
 | 第五层 | 外部依赖层 | — | 智谱 AI / DeepSeek / Ollama、PostgreSQL、ChromaDB、Open-Meteo |
 | 横切 | 横切关注点 | `src/config/`、`src/utils/logger.py` | 配置管理、可观测性（LangSmith + logging）、安全防护、部署运维 |
@@ -393,7 +393,7 @@ ai-agent-lab/                    # 项目根目录
 **核心功能**: 实现多 Agent 协作架构
 **模块组成**:
 - **workflow.py**: LangGraph 工作流引擎，包含 Supervisor 路由和多 Agent 协作
-- **specialist/**: 专业领域 Agent 集合
+- **experts/**: 专业领域 Agent 集合
   - `base.py`: 领域专家基类（DomainSpecialistAgent）和全局管理器（AgentManager）
   - `agent_tech.py`: AI Agent 开发专家
   - `agent_travel.py`: 旅游规划专家
@@ -441,7 +441,7 @@ ai-agent-lab/                    # 项目根目录
 **核心功能**: 管理 Agent 的对话历史和状态
 **模块组成**:
 - **conversation.py**: 管理用户与 Agent 的对话历史
-- **state.py**: 持久化 Agent 状态和检查点
+- **checkpointer.py**: 持久化 Agent 状态和检查点（基于 PostgreSQL AsyncPostgresSaver）
 - **manager.py**: 统一协调记忆系统
 
 **特性**:
@@ -468,7 +468,7 @@ ai-agent-lab/                    # 项目根目录
 **位置**: `src/llm/`
 **核心功能**: 提供统一的 LLM 服务接口
 **模块组成**:
-- **service.py**: LLM 服务，支持多种模型提供商
+- **gateway.py**: LLM Gateway，支持多模型路由、容灾降级、调用统计
 - **debug.py**: LLM 调试和测试工具
 
 **支持特性**:
@@ -642,11 +642,11 @@ python -c "
 import sys
 sys.path.insert(0, '.')
 try:
-    from src.agents.specialist.base import DomainSpecialistAgent, agent_manager
+    from src.agents.experts.base import DomainSpecialistAgent, agent_manager
     from src.tools.tool_manager import DynamicToolManager, tool_manager
     from src.agents.workflow import get_async_agent, AgentState
-    from src.agents.specialist.agent_tech import get_agent_tech_specialist
-    from src.agents.specialist.agent_travel import get_travel_specialist
+    from src.agents.experts.agent_tech import get_agent_tech_specialist
+    from src.agents.experts.agent_travel import get_travel_specialist
     
     print('✅ 架构重构验证成功')
     print(f'  - DomainSpecialistAgent: {DomainSpecialistAgent}')
