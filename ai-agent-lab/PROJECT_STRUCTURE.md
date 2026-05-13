@@ -84,7 +84,7 @@
 │  第三层：Agent 编排层（Orchestration Layer）— src/agents/workflow.py              │
 │  ─────────────────────────────────────────────────                              │
 │  职责：多 Agent 协作、Supervisor 意图路由、状态图驱动、ReAct 循环                    │
-│  技术：LangGraph StateGraph（Supervisor + 2 个专业 Agent）                       │
+│  技术：LangGraph StateGraph（Supervisor + 6 个专业 Expert Agent）                       │
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐       │
 │  │              LangGraph 多 Agent 状态图（workflow.py）                │       │
@@ -154,8 +154,12 @@
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │
 │  专业 Agent 实现（src/agents/experts/）:                                    │       │
-│  ├─ agent_tech.py   — Agent 技术专家                                        │       │
-│  └─ agent_travel.py — 旅游规划专家                                         │       │
+│  ├─ agent_tech.py      — AI Agent 开发专家                                  │       │
+│  ├─ agent_sights.py    — 景点推荐专家                                        │       │
+│  ├─ agent_food.py      — 美食推荐专家                                        │       │
+│  ├─ agent_transport.py — 交通出行专家                                        │       │
+│  ├─ agent_finance.py   — 财务规划专家                                        │       │
+│  └─ agent_travel.py    — 旅游规划专家                                        │       │
 │                                                                                 │
 └──────┬──────────────┬───────────────────────────────────────────────────────────┘
        │              │
@@ -292,7 +296,7 @@ ai-agent-lab/                    # 项目根目录
 │   ├── agents/               # Agent 系统
 │   │   ├── __init__.py       # Agent 系统接口
 │   │   ├── workflow.py       # LangGraph 工作流引擎（Supervisor + 多 Agent 协作）
-│   │   └── specialist/       # 专业领域 Agent
+│   │   └── experts/          # 专业领域 Agent
 │   │       ├── __init__.py
 │   │       ├── base.py       # 领域专家基类 + 全局管理器
 │   │       ├── agent_tech.py # AI Agent 开发专家
@@ -315,7 +319,7 @@ ai-agent-lab/                    # 项目根目录
 │   ├── memory/               # 记忆系统
 │   │   ├── __init__.py       # 记忆系统接口
 │   │   ├── conversation.py   # 对话记忆管理
-│   │   ├── state.py          # 状态记忆和检查点
+│   │   ├── checkpointer.py  # 状态检查点
 │   │   └── manager.py        # 记忆系统管理器
 │   │
 │   ├── rag/                  # RAG 系统
@@ -326,8 +330,7 @@ ai-agent-lab/                    # 项目根目录
 │   │
 │   ├── llm/                  # LLM 服务层
 │   │   ├── __init__.py
-│   │   ├── service.py        # LLM 服务
-│   │   └── debug.py          # LLM 调试工具
+│   │   └── gateway.py       # LLM 网关
 │   │
 │   ├── api/                  # API 接口层
 │   │   ├── __init__.py
@@ -336,7 +339,7 @@ ai-agent-lab/                    # 项目根目录
 │   ├── config/               # 配置管理
 │   │   └── __init__.py       # 配置接口
 │   │
-│   ├── monitoring/           # 监控系统
+│   ├── metrics/              # 监控系统
 │   │   ├── __init__.py
 │   │   └── metrics.py        # 监控指标
 │   │
@@ -366,8 +369,8 @@ ai-agent-lab/                    # 项目根目录
 |------|------|----------|------|
 | 第一层 | 接入层 | `static/index.html` | Web 前端（Markdown 渲染 + SSE 流式），API 网关统一收口 |
 | 第二层 | 服务接口层 | `src/api/server.py` | FastAPI 5 个端点：`/chat`、`/chat/stream`、`/session/new`、`/health`、`/llm/stats` |
-| 第三层 | Agent 编排层 | `src/agents/workflow.py` + `src/agents/experts/` | LangGraph 多 Agent 状态图，Supervisor 意图路由 + 2 条专业路径 |
-| 第四层 | 基础设施服务层 | `src/llm/`、`src/rag/`、`src/memory/`、`src/tools/`、`src/prompts/`、`src/monitoring/` | LLM Gateway、Embedding、RAG 引擎、记忆管理、Prompt 管理、工具注册表、监控指标 |
+| 第三层 | Agent 编排层 | `src/agents/workflow.py` + `src/agents/experts/` | LangGraph 多 Agent 状态图，Supervisor 意图路由 + 6 条专业路径 |
+| 第四层 | 基础设施服务层 | `src/llm/`、`src/rag/`、`src/memory/`、`src/tools/`、`src/prompts/`、`src/metrics/` | LLM Gateway、Embedding、RAG 引擎、记忆管理、Prompt 管理、工具注册表、监控指标 |
 | 第五层 | 外部依赖层 | — | 智谱 AI / DeepSeek / Ollama、PostgreSQL、ChromaDB、Open-Meteo |
 | 横切 | 横切关注点 | `src/config/`、`src/utils/logger.py` | 配置管理、可观测性（LangSmith + logging）、安全防护、部署运维 |
 
@@ -394,8 +397,12 @@ ai-agent-lab/                    # 项目根目录
 **模块组成**:
 - **workflow.py**: LangGraph 工作流引擎，包含 Supervisor 路由和多 Agent 协作
 - **experts/**: 专业领域 Agent 集合
-  - `base.py`: 领域专家基类（DomainSeccialisalistAgent）和全局管理器（AgentManager）
+  - `base.py`: 领域专家基类（DomainExpertAgent）和全局管理器（AgentManager）
   - `agent_tech.py`: AI Agent 开发专家
+  - `agent_sights.py`: 景点推荐专家
+  - `agent_food.py`: 美食推荐专家
+  - `agent_transport.py`: 交通出行专家
+  - `agent_finance.py`: 财务规划专家
   - `agent_travel.py`: 旅游规划专家
 
 **架构特点**:
@@ -406,7 +413,7 @@ ai-agent-lab/                    # 项目根目录
 
 **设计原则**:
 - ✅ 单一职责：每个模块有明确职责
-- ✅ 开闭原则：新增 Agent 类型只需在 specialist/ 中添加新模块
+- ✅ 开闭原则：新增 Agent 类型只需在 experts/ 中添加新模块
 - ✅ 依赖倒置：通过接口和配置管理依赖
 
 ### 3. **tools/** - 统一工具系统
@@ -501,8 +508,8 @@ ai-agent-lab/                    # 项目根目录
 - ✅ 环境隔离：支持开发、测试、生产环境配置
 - ✅ 类型安全：配置项类型检查和验证
 
-### 9. **monitoring/** - 监控系统
-**位置**: `src/monitoring/`
+### 9. **metrics/** - 监控系统
+**位置**: `src/metrics/`
 **核心功能**: 收集和展示监控指标
 **模块组成**:
 - **metrics.py**: 监控指标收集和展示
@@ -527,14 +534,22 @@ ai-agent-lab/                    # 项目根目录
 
 ```
 START → memory_node → supervisor_node（LLM 意图分类）
-    ├── "agent_tech" → agent_tech_rag_node → agent_tech_node → END
-    └── "travel"     → travel_rag_node     → travel_node     → END
+    ├── "agent_tech"   → agent_tech_rag_node   → agent_tech_node   → END
+    ├── "sights"       → sights_rag_node       → sights_node       → END
+    ├── "food"         → food_rag_node         → food_node         → END
+    ├── "transport"    → transport_rag_node    → transport_node     → END
+    ├── "finance"      → finance_rag_node      → finance_node      → END
+    └── "travel"       → travel_rag_node       → travel_node       → END
 ```
 
-- **Supervisor**：用 `temperature=0` 的 LLM 做意图分类，路由到 2 个专业 Agent
+- **Supervisor**：用 `temperature=0` 的 LLM 做意图分类，路由到 6 个专业 Expert Agent
 - **Agent 技术助手**：先走 RAG 检索 `knowledge_base_agent/` 知识库，再用 LLM 生成回答
+- **景点推荐助手**：先走 RAG 检索景点知识库，再用 LLM 生成回答
+- **美食推荐助手**：先走 RAG 检索美食知识库，再用 LLM 生成回答
+- **交通出行助手**：先走 RAG 检索交通知识库，再用 LLM 生成回答
+- **财务规划助手**：先走 RAG 检索财务知识库，再用 LLM 生成回答
 - **旅游规划助手**：先走 RAG 检索 `knowledge_base_travel/` 知识库，再用 LLM 生成回答
-- **工具调用**：两个专业 Agent 都可以通过 `should_continue()` 调用工具（计算器、天气查询等）
+- **工具调用**：所有专家 Agent 都可以通过 `should_continue()` 调用工具（计算器、天气查询等）
 
 ## 数据流向
 
@@ -542,15 +557,19 @@ START → memory_node → supervisor_node（LLM 意图分类）
 用户请求 → API 层 (src/api/)
          → Prompt 系统 (src/prompts/) → 安全校验
          → 工作流引擎 (src/agents/workflow.py) → Supervisor 路由
-         → 专业领域 Agent (src/agents/specialist/)
+         → 专业领域 Agent (src/agents/experts/)
              ├→ AI Agent 开发专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
+             ├→ 景点推荐专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
+             ├→ 美食推荐专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
+             ├→ 交通出行专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
+             ├→ 财务规划专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
              └→ 旅游规划专家 → RAG 系统 (src/rag/) → 知识库 + 工具调用
          → 工具系统 (src/tools/) → 动态工具管理器
              ├→ MCP 工具 → 外部 MCP 服务器
              ├→ API 工具 → RESTful API（天气查询等）
              └→ 本地工具 → 本地 Python 函数（数学计算）
          → 记忆系统 (src/memory/) → 持久化存储
-         → 监控系统 (src/monitoring/) → 指标收集
+         → 监控系统 (src/metrics/) → 指标收集
          → Prompt 系统 (src/prompts/) → 输出过滤
 ```
 
@@ -563,7 +582,7 @@ START → memory_node → supervisor_node（LLM 意图分类）
 
 ### 2. **开闭原则**
 - 模块对扩展开放，对修改封闭
-- 新增 Agent 类型只需在 `specialist/` 中添加新模块
+- 新增 Agent 类型只需在 `experts/` 中添加新模块
 - 新增工具类型可以扩展对应工具包
 
 ### 3. **依赖倒置原则**
@@ -579,7 +598,7 @@ START → memory_node → supervisor_node（LLM 意图分类）
 ## 扩展指南
 
 ### 添加新的专业 Agent
-1. 在 `src/agents/specialist/` 中创建新文件
+1. 在 `src/agents/experts/` 中创建新文件
 2. 继承 `DomainExpertAgent` 基类
 3. 实现 `initialize()` 和 `process()` 方法
 4. 在 `src/agents/__init__.py` 中导出
@@ -645,8 +664,8 @@ try:
     from src.agents.experts.base import DomainExpertAgent, agent_manager
     from src.tools.tool_manager import DynamicToolManager, tool_manager
     from src.agents.workflow import get_async_agent, AgentState
-    from src.agents.experts.agent_tech import get_agent_tech_specialist
-    from src.agents.experts.agent_travel import get_travel_specialist
+    from src.agents.experts.agent_tech import get_agent_tech_expert
+    from src.agents.experts.agent_travel import get_travel_expert
     
     print('✅ 架构重构验证成功')
     print(f'  - DomainExpertAgent: {DomainExpertAgent}')
@@ -729,7 +748,7 @@ python run_server.py
 *状态: 项目结构文档已更新，反映最新的架构重构*
 *更新内容: 
   - 移除 Java 技术专家相关内容（java_tech.py、knowledge_base_java/）
-  - 保留 2 个专业 Agent：Agent 技术专家、旅游规划专家
+  - 保留 6 个专业 Expert Agent：Agent 技术专家、景点推荐专家、美食推荐专家、交通出行专家、财务规划专家、旅游规划专家
   - 更新架构全景图，移除 java_tech 路由和节点
   - 完善目录结构和模块职责说明*
 *来源: PROJECT_STRUCTURE.md + 0-企业级Agent生产架构分层全景图.md*
