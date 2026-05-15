@@ -28,7 +28,7 @@ import time
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -100,6 +100,33 @@ class ChatResponse(BaseModel):
 class SessionResponse(BaseModel):
     """新建会话响应体"""
     thread_id: str = Field(..., description="新创建的会话 ID")
+
+
+# ============================================================
+# 文档上传相关模型
+# ============================================================
+class DocumentUploadResponse(BaseModel):
+    """文档上传响应体"""
+    success: bool = Field(..., description="是否上传成功")
+    message: str = Field(..., description="响应消息")
+    file_name: str = Field(..., description="上传的文件名")
+    saved_path: str = Field(None, description="保存到知识库的路径")
+    quality_score: float = Field(0.0, description="文档质量评分")
+    duplicate_detected: bool = Field(False, description="是否检测到重复")
+    chunk_count: int = Field(0, description="分块数量")
+    metadata: dict = Field(None, description="文档元数据")
+
+
+class DocumentListResponse(BaseModel):
+    """文档列表响应体"""
+    documents: list = Field(..., description="文档列表")
+    total: int = Field(..., description="文档总数")
+
+
+class DocumentDeleteResponse(BaseModel):
+    """文档删除响应体"""
+    success: bool = Field(..., description="是否删除成功")
+    message: str = Field(..., description="响应消息")
 
 
 # ============================================================
@@ -711,3 +738,242 @@ async def chat_stream(request: ChatRequest):
             "Connection": "keep-alive",
         },
     )
+
+
+# ============================================================
+# 文档上传知识库接口
+# ============================================================
+@app.post("/rag/upload", response_model=DocumentUploadResponse)
+async def upload_document_to_knowledge_base(
+    file: UploadFile = File(...),
+    knowledge_base_name: str = "knowledge_base_agent",
+    chunk_size: int = 500,
+    chunk_overlap: int = 50
+):
+    """
+    上传文档到知识库
+    
+    【知识点】完整的文档处理流程：
+    1. 接收上传的文件（支持PDF/Word/Excel/TXT/MD/HTML/图片）
+    2. 使用 DataCleaner 执行7步清洗流水线
+    3. 将清洗后的Markdown文档保存到知识库目录
+    4. 支持自定义知识库名称和分块参数
+    
+    【支持的文件类型】
+    - PDF: .pdf
+    - Word: .docx, .doc
+    - Excel: .xlsx, .xls
+    - Text: .txt
+    - Markdown: .md
+    - HTML: .html
+    - Image: .png, .jpg, .jpeg, .bmp, .tiff（需要OCR支持）
+    
+    Args:
+        file: 上传的文件
+        knowledge_base_name: 目标知识库名称，默认为 knowledge_base_agent
+        chunk_size: 分块大小，默认500字符
+        chunk_overlap: 块重叠大小，默认50字符
+        
+    Returns:
+        DocumentUploadResponse: 上传结果，包含质量评分、分块数等信息
+    """
+    from src.rag import DataCleaner
+    from src.config import KNOWLEDGE_BASE_DIR
+    
+    try:
+        # 检查文件类型
+        allowed_extensions = {'.pdf', '.docx', '.doc', '.xlsx', '.xls', 
+                              '.txt', '.md', '.html', '.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in allowed_extensions:
+            raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file_ext}")
+        
+        # 创建临时文件
+        temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, file.filename)
+        
+        # 保存上传的文件
+        with open(temp_path, 'wb') as f:
+            f.write(await file.read())
+        
+        logger.info(f"文件已保存到临时目录: {temp_path}")
+        
+        # 初始化数据清洗器
+        cleaner = DataCleaner()
+        
+        # 执行完整的7步处理流水线
+        result, chunks = cleaner.process(
+            temp_path,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+        
+        # 构建知识库路径
+        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
+        
+        # 保存到知识库
+        base_name = os.path.splitext(file.filename)[0]
+        saved = cleaner.save_to_knowledge_base(result, chunks, knowledge_base_path, base_name)
+        
+        # 删除临时文件
+        os.remove(temp_path)
+        
+        if saved:
+            saved_path = os.path.join(knowledge_base_path, f"{base_name}.md")
+            return DocumentUploadResponse(
+                success=True,
+                message="文档上传并清洗成功",
+                file_name=file.filename,
+                saved_path=saved_path,
+                quality_score=result.quality_score,
+                duplicate_detected=result.duplicate_detected,
+                chunk_count=len(chunks),
+                metadata=result.metadata
+            )
+        else:
+            if result.duplicate_detected:
+                return DocumentUploadResponse(
+                    success=False,
+                    message="检测到重复文档，未保存",
+                    file_name=file.filename,
+                    duplicate_detected=True,
+                    chunk_count=len(chunks),
+                    metadata=result.metadata
+                )
+            else:
+                return DocumentUploadResponse(
+                    success=False,
+                    message="文档保存失败",
+                    file_name=file.filename,
+                    chunk_count=len(chunks),
+                    metadata=result.metadata
+                )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"文档上传失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
+
+
+@app.get("/rag/documents", response_model=DocumentListResponse)
+async def list_documents(knowledge_base_name: str = "knowledge_base_agent"):
+    """
+    获取知识库中的文档列表
+    
+    Args:
+        knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
+        
+    Returns:
+        DocumentListResponse: 文档列表
+    """
+    from src.config import KNOWLEDGE_BASE_DIR
+    
+    try:
+        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
+        
+        if not os.path.exists(knowledge_base_path):
+            return DocumentListResponse(documents=[], total=0)
+        
+        documents = []
+        for filename in os.listdir(knowledge_base_path):
+            if filename.endswith('.md') and not filename.endswith('_metadata.json'):
+                file_path = os.path.join(knowledge_base_path, filename)
+                file_stat = os.stat(file_path)
+                documents.append({
+                    "name": filename,
+                    "path": file_path,
+                    "size": file_stat.st_size,
+                    "modified_at": datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+                })
+        
+        return DocumentListResponse(documents=documents, total=len(documents))
+    
+    except Exception as e:
+        logger.error(f"获取文档列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")
+
+
+@app.delete("/rag/documents/{doc_name}", response_model=DocumentDeleteResponse)
+async def delete_document(doc_name: str, knowledge_base_name: str = "knowledge_base_agent"):
+    """
+    删除知识库中的文档
+    
+    Args:
+        doc_name: 文档名称（含扩展名）
+        knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
+        
+    Returns:
+        DocumentDeleteResponse: 删除结果
+    """
+    from src.config import KNOWLEDGE_BASE_DIR
+    
+    try:
+        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
+        doc_path = os.path.join(knowledge_base_path, doc_name)
+        
+        if not os.path.exists(doc_path):
+            return DocumentDeleteResponse(
+                success=False,
+                message=f"文档不存在: {doc_name}"
+            )
+        
+        os.remove(doc_path)
+        
+        # 同时删除对应的元数据文件
+        base_name = os.path.splitext(doc_name)[0]
+        metadata_path = os.path.join(knowledge_base_path, f"{base_name}_metadata.json")
+        if os.path.exists(metadata_path):
+            os.remove(metadata_path)
+        
+        # 同时删除分块目录
+        chunks_dir = os.path.join(knowledge_base_path, f"{base_name}_chunks")
+        if os.path.exists(chunks_dir):
+            import shutil
+            shutil.rmtree(chunks_dir)
+        
+        return DocumentDeleteResponse(
+            success=True,
+            message=f"文档删除成功: {doc_name}"
+        )
+    
+    except Exception as e:
+        logger.error(f"删除文档失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
+
+
+@app.post("/rag/rebuild-index")
+async def rebuild_rag_index(knowledge_base_name: str = "knowledge_base_agent"):
+    """
+    重建RAG索引（知识库更新后调用）
+    
+    Args:
+        knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
+        
+    Returns:
+        dict: 重建结果
+    """
+    from src.rag import RAGEngine
+    from src.config import KNOWLEDGE_BASE_DIR
+    
+    try:
+        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
+        
+        if not os.path.exists(knowledge_base_path):
+            raise HTTPException(status_code=400, detail=f"知识库不存在: {knowledge_base_name}")
+        
+        # 创建RAG引擎会自动重建索引
+        engine = RAGEngine(knowledge_dir=knowledge_base_path)
+        
+        return {
+            "success": True,
+            "message": "RAG索引重建成功",
+            "knowledge_base": knowledge_base_name
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"重建RAG索引失败: {e}")
+        raise HTTPException(status_code=500, detail=f"重建索引失败: {str(e)}")
