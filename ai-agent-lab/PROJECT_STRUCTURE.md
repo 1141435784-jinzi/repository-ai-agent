@@ -84,129 +84,227 @@
 │  第三层：Agent 编排层（Orchestration Layer）— src/agents/workflow.py              │
 │  ─────────────────────────────────────────────────                              │
 │  职责：多 Agent 协作、Supervisor 意图路由、状态图驱动、ReAct 循环、工具调用循环         │
-│  技术：LangGraph StateGraph（Supervisor + 5 个专业 Expert Agent）                       │
+│  技术：LangGraph StateGraph（Supervisor + 5 个专业 Expert Agent）                 │
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐       │
-│  │              LangGraph 多 Agent 状态图（workflow.py）                │       │
+│  │              LangGraph 多 Agent 状态图（workflow.py）                 │       │
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐       │
 │  │  【核心特性】                                                         │       │
-│  │  ├─ 状态图编译缓存（_graph_compile_cache）                           │       │
-│  │  ├─ 工具调用重试（tenacity，3次，指数退避1-10秒）                   │       │
-│  │  ├─ END节点路由（Agent可直接返回结果）                              │       │
-│  │  ├─ 线程安全单例（asyncio.Lock）                                    │       │
-│  │  ├─ 迭代计数防死循环（MAX_ITERATIONS）                              │       │
-│  │  ├─ 任务分解机制（复杂任务自动分解为子任务）                         │       │
-│  │  ├─ Agent间协作（跨领域知识共享）                                   │       │
-│  │  └─ 反思总结机制（记录关键决策和反思笔记）                           │       │
+│  状态图编 状态图编译缓存（_graph_compile_cache）                           │       │
+│  │  ├─ 工具调用重试（tenacity，3次，指数退避1-10秒）                        │       │
+│  │  ├─ END节点路由（Agent可直接返回结果）                                  │       │
+│  │  ├─ 线程安全单例（asyncio.Lock）                                      │       │
+│  │  ├─ 迭代计数防死循环（MAX_ITERATIONS）                                 │       │
+│  │  ├─ 任务分解机制（复杂任务自动分解为子任务）                              │       │
+│  │  ├─ Agent间协作（跨领域知识共享）                                      │       │
+│  │  └─ 反思总结机制（记录关键决策和反思笔记）                                │       │
 │  └─────────────────────────────────────────────────────────────────────┘       │
 │                                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐       │
-│  │  【工作流架构】                                                       │       │
-│  │                                                                     │       │
-│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐           │       │
-│  │  │    START     │───▶│   memory     │───▶│task_decompo- │           │       │
-│  │  └──────────────┘    │  (记忆处理)   │    │  sition      │           │       │
-│  │                      └──────────────┘    │  (任务分解)   │           │       │
-│  │                                          └───────┬───────┘           │       │
-│  │                                                  │                   │       │
-│  │                                                  ▼                   │       │
-│  │                                        ┌──────────────┐              │       │
-│  │                                        │  supervisor  │              │       │
-│  │                                        │  (意图路由)   │              │       │
-│  │                                        └───────┬───────┘              │       │
-│  │                                                │                     │       │
-│  │          ┌─────────────────────────────────────┼─────────────────┐    │       │
-│  │          ▼           ▼           ▼           ▼     ▼               │    │       │
-│  │    ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │       │
-│  │    │tech_rag │ │sight_rag│ │trans_rag│ │fin_rag  │ │food_rag │   │    │       │
-│  │    └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘   │    │       │
-│  │         │           │           │           │           │          │    │       │
-│  │         ▼           ▼           ▼           ▼           ▼          │    │       │
-│  │    ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │       │
-│  │    │agent_tech│ │sights  │ │transport│ │finance  │ │food_agent│   │    │       │
-│  │    │         │ │ agent   │ │ agent   │ │ agent   │ │         │   │    │       │
-│  │    └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘   │    │       │
-│  │         │           │           │           │           │          │    │       │
-│  │         └───────────┴───────────┴───────────┴───────────┘          │    │       │
-│  │                                       │                            │    │       │
-│  │                                       ▼                            │    │       │
-│  │                          ┌─────────────────────┐                    │    │       │
-│  │                          │collaboration_deci-  │                    │    │       │
-│  │                          │  sion               │                    │    │       │
-│  │                          │  (协作/工具决策)     │                    │    │       │
-│  │                          └───────────┬─────────┘                    │    │       │
-│  │                    ┌─────────────────┼─────────────────┐            │    │       │
-│  │                    ▼                 ▼                 ▼            │    │       │
-│  │          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │    │       │
-│  │          │tool_selector│   │  supervisor │   │  reflection │       │    │       │
-│  │          │ (工具选择)   │   │  (协作路由)  │   │  (反思总结)  │       │    │       │
-│  │          └──────┬──────┘   └─────────────┘   └──────┬──────┘       │    │       │
-│  │                 │                                   │               │    │       │
-│  │    ┌────────────┼────────────┐                     │               │    │       │
-│  │    ▼            ▼            ▼                     │               │    │       │
-│  │┌─────────┐  ┌─────────┐  ┌─────────┐              │               │    │       │
-│  ││local    │  │api      │  │mcp      │              │               │    │       │
-│  ││tools    │  │tools    │  │tools    │              │               │    │       │
-│  │└────┬────┘  └────┬────┘  └────┬────┘              │               │    │       │
-│  │     │            │            │                    │               │    │       │
-│  │     └────────────┼────────────┘                    │               │    │       │
-│  │                  ▼                                 │               │    │       │
-│  │         ┌───────────────┐                         │               │    │       │
-│  │         │tool_result_   │                         │               │    │       │
-│  │         │ handler       │─────────────────────────┘               │    │       │
-│  │         └───────────────┘                                       │    │       │
-│  │                                                                  │    │       │
-│  │                            ┌──────────────────────────────────────┘    │    │       │
-│  │                            ▼                                         │    │       │
-│  │                      ┌─────────────┐                                 │    │       │
-│  │                      │   summary   │                                 │    │       │
-│  │                      │   (总结)    │                                 │    │       │
-│  │                      └──────┬──────┘                                 │    │       │
-│  │                             │                                        │    │       │
-│  │                             ▼                                        │    │       │
-│  │                      ┌─────────────┐                                 │    │       │
-│  │                      │    END      │                                 │    │       │
-│  │                      └─────────────┘                                 │    │       │
-│  │                                                                     │       │
-│  │  【流程说明】                                                         │       │
-│  │  1. START → memory → task_decomposition（任务分解）                   │       │
-│  │  2. task_decomposition → supervisor（意图分类）                       │       │
-│  │  3. supervisor 路由到对应 RAG 节点                                   │       │
-│  │  4. RAG → Agent（生成响应）                                         │       │
-│  │  5. collaboration_decision 判断：                                    │       │
-│  │     ├─ 需要工具调用 → tool_selector → 工具 → handler → 循环回到决策    │       │
-│  │     ├─ 需要协作 → supervisor（重新路由到目标 Agent）                   │       │
-│  │     └─ 无需工具和协作 → reflection → summary → END                   │       │
-│  └─────────────────────────────────────────────────────────────────────┘       │
-│                                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐       │
-│  │  【状态定义】AgentState（TypedDict）                                  │       │
-│  │  ├─ messages           → 对话消息                                   │       │
-│  │  ├─ trimmed_messages   → 裁剪后的消息                               │       │
-│  │  ├─ memory_context     → 三层记忆上下文                             │       │
-│  │  ├─ route              → Supervisor 路由结果                        │       │
-│  │  ├─ rag_context        → RAG 检索上下文                            │       │
-│  │  ├─ rag_sources        → RAG 来源文件列表                          │       │
-│  │  ├─ tool_type          → 工具类型（local/api/mcp）                  │       │
-│  │  ├─ tool_error         → 工具调用错误信息                           │       │
-│  │  ├─ has_tool_calls     → 是否有工具调用                             │       │
-│  │  ├─ collaboration_data → Agent 间共享数据                          │       │
-│  │  ├─ current_agent      → 当前执行的 Agent                          │       │
-│  │  ├─ agent_history      → Agent 执行历史                            │       │
-│  │  ├─ needs_collaboration→ 是否需要其他 Agent 协作                    │       │
-│  │  ├─ collaboration_target→ 协作目标 Agent                           │       │
-│  │  ├─ collaboration_reason→ 协作原因                                 │       │
-│  │  ├─ task_decomposition → 任务分解结果                              │       │
-│  │  ├─ subtasks           → 子任务列表                                │       │
-│  │  ├─ current_subtask    → 当前子任务索引                             │       │
-│  │  ├─ reflection_notes   → 反思笔记                                  │       │
-│  │  ├─ key_decisions      → 关键决策记录                              │       │
-│  │  └─ iteration_count    → 当前迭代次数（防死循环）                    │       │
-│  └─────────────────────────────────────────────────────────────────────┘       │
-│                                                                                 │
-│  状态图节点清单（20个核心节点）:                                          │       │
+│  ┌───────────────────────────────────────────────────────────────────────┐       │
+│  │  【工作流架构】                                                         │       │
+│  │                                                                       │       │
+│  │  【核心节点列表】                                                      │       │
+│  │  ┌─────────────────────────────────────────────────────────────────┐  │       │
+│  │  │ 记忆与路由层：                                                     │  │       │
+│  │  │  • memory          - 记忆检索节点，加载历史对话上下文              │  │       │
+│  │  │  • task_decomposition - 任务分解节点，判断是否需要分解复杂任务     │  │       │
+│  │  │  • supervisor      - 意图路由节点，根据用户查询路由到对应领域Agent │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ RAG检索层（5个领域知识库）：                                        │  │       │
+│  │  │  • agent_tech_rag  - Agent技术知识库检索                           │  │       │
+│  │  │  • sights_rag      - 景点知识库检索                                 │  │       │
+│  │  │  • transport_rag   - 交通知识库检索                                 │  │       │
+│  │  │  • finance_rag     - 财务知识库检索                                 │  │       │
+│  │  │  • food_rag        - 美食知识库检索                                 │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ Agent执行层（5个领域专家）：                                         │  │       │
+│  │  │  • agent_tech      - Agent技术专家                                 │  │       │
+│  │  │  • sights_agent    - 景点推荐专家                                 │  │       │
+│  │  │  • transport_agent - 交通出行专家                                 │  │       │
+│  │  │  • finance_agent   - 财务规划专家                                 │  │       │
+│  │  │  • food_agent      - 美食推荐专家                                 │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 协作与工具层：                                                     │  │       │
+│  │  │  • collaboration_decision - 协作/工具决策节点                       │  │       │
+│  │  │  • tool_selector   - 工具类型选择器                               │  │       │
+│  │  │  • local_tools     - 本地工具执行节点                             │  │       │
+│  │  │  • api_tools       - API工具执行节点                              │  │       │
+│  │  │  • mcp_tools       - MCP工具执行节点                               │  │       │
+│  │  │  • tool_result_handler - 工具结果处理节点                         │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 总结与反思层：                                                     │  │       │
+│  │  │  • reflection      - 反思总结节点，记录关键决策                     │  │       │
+│  │  │  • summary         - 最终总结节点，生成最终回复                    │  │       │
+│  │  └─────────────────────────────────────────────────────────────────┘  │       │
+│  │                                                                       │       │
+│  │  【标准执行流程】                                                     │       │
+│  │  ┌─────────────────────────────────────────────────────────────────┐  │       │
+│  │  │ 步骤1：START → memory                                           │  │       │
+│  │  │   - 接收用户输入                                                 │  │       │
+│  │  │   - 加载历史对话记忆（三层记忆：短期、中期、长期）                │  │       │
+│  │  │   - 提取记忆上下文注入到状态                                     │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 步骤2：memory → task_decomposition                               │  │       │
+│  │  │   - 分析用户查询复杂度                                           │  │       │
+│  │  │   - 判断是否需要分解为多个子任务                                 │  │       │
+│  │  │   - 如果是复杂任务，生成子任务列表和执行顺序                     │  │       │
+│  │  │   - 否则直接进入下一步                                           │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 步骤3：task_decomposition → supervisor（意图路由）                │  │       │
+│  │  │   - 分析用户查询意图                                             │  │       │
+│  │  │   - 根据关键词匹配路由到对应领域：                               │  │       │
+│  │  │     • "景点/景区/旅游" → sights                                   │  │       │
+│  │  │     • "交通/高铁/航班/地铁" → transport                          │  │       │
+│  │  │     • "财务/预算/费用" → finance                                 │  │       │
+│  │  │     • "美食/餐厅/推荐菜" → food                                   │  │       │
+│  │  │     • 其他 → agent_tech（默认）                                   │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 步骤4：supervisor → RAG节点 → Agent节点                          │  │       │
+│  │  │   - 根据路由结果进入对应领域的RAG节点                             │  │       │
+│  │  │   - RAG节点检索知识库，获取相关文档和上下文                         │  │       │
+│  │  │   - 将RAG结果注入到状态（rag_context, rag_sources）              │  │       │
+│  │  │   - 进入对应的Agent节点，生成响应（可能包含工具调用）             │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 步骤5：Agent → collaboration_decision（协作/工具决策）           │  │       │
+│  │  │   - 检查Agent响应中是否包含工具调用                               │  │       │
+│  │  │   - 检查是否需要其他Agent的协作                                   │  │       │
+│  │  │   - 根据判断结果进行路由：                                       │  │       │
+│  │  ├─────────────────────────────────────────────────────────────────┤  │       │
+│  │  │ 步骤6：collaboration_decision 的三种路由分支：                   │  │       │
+│  │  │   【分支1：工具调用循环】                                        │  │       │
+│  │  │   条件：has_tool_calls = True                                    │  │       │
+│  │  │   流程：                                                         │  │       │
+│  │  │     → tool_selector（判断工具类型：local/api/mcp）              │  │       │
+│  │  │     → local_tools / api_tools / mcp_tools（执行工具）            │  │       │
+│  │  │     → tool_result_handler（处理工具结果）                        │  │       │
+│  │  │     → collaboration_decision（循环回决策节点，继续判断）         │  │       │
+│  │  │   说明：工具调用会循环执行，直到没有工具调用为止                 │  │       │
+│  │  │                                                                │  │       │
+│  │  │   【分支2：Agent协作路由】                                      │  │       │
+│  │  │   条件：needs_collaboration = True                               │  │       │
+│  │  │   流程：                                                         │  │       │
+│  │  │     → supervisor（重新路由到协作目标Agent）                     │  │       │
+│  │  │     → 目标RAG节点 → 目标Agent节点                               │  │       │
+│  │  │     → collaboration_decision（再次判断）                        │  │       │
+│  │  │   说明：当当前Agent发现需要其他领域知识时，触发协作路由         │  │       │
+│  │  │                                                                │  │       │
+│  │  │   【分支3：反思总结】                                          │  │       │
+│  │  │   条件：has_tool_calls = False 且 needs_collaboration = False   │  │       │
+│  │  │   流程：                                                         │  │       │
+│  │  │     → reflection（记录关键决策和反思笔记）                       │  │       │
+│  │  │     → summary（生成最终回复）                                   │  │       │
+│  │  │     → END                                                       │  │       │
+│  │  │   说明：无需工具调用和协作时，进入总结流程                       │  │       │
+│  │  └─────────────────────────────────────────────────────────────────┘  │       │
+│  │                                                                       │       │
+│  │  【场景示例】                                                         │       │
+│  │                                                                       │       │
+│  │  【场景1：单领域简单查询】                                            │       │
+│  │  用户提问："推荐上海的景点"                                          │       │
+│  │  执行流程：                                                          │       │
+│  │    1. START → memory（加载历史记忆）                                │       │
+│  │    2. memory → task_decomposition（简单任务，无需分解）              │       │
+│  │    3. task_decomposition → supervisor（识别为景点查询）             │       │
+│  │    4. supervisor → sights_rag（检索景点知识库）                      │       │
+│  │    5. sights_rag → sights_agent（生成景点推荐响应）                 │       │
+│  │    6. sights_agent → collaboration_decision（无工具调用，无协作）    │       │
+│  │    7. collaboration_decision → reflection（记录决策）                │       │
+│  │    8. reflection → summary（生成最终回复）                           │       │
+│  │    9. summary → END                                                 │       │
+│  │                                                                       │       │
+│  │  【场景2：跨领域协作查询】                                            │       │
+│  │  用户提问："推荐上海的景点和美食"                                    │       │
+│  │  执行流程：                                                          │       │
+│  │    1. START → memory → task_decomposition → supervisor              │       │
+│  │    2. supervisor → sights_rag → sights_agent（推荐景点）             │       │
+│  │    3. sights_agent 发现需要美食知识                                  │       │
+│  │    4. sights_agent → collaboration_decision                         │       │
+│  │    5. collaboration_decision 判断：needs_collaboration=True         │       │
+│  │    6. collaboration_decision → supervisor（协作路由）              │       │
+│  │    7. supervisor → food_rag → food_agent（推荐美食）                 │       │
+│  │    8. food_agent → collaboration_decision（无工具调用，无协作）      │       │
+│  │    9. collaboration_decision → reflection → summary → END          │       │
+│  │                                                                       │       │
+│  │  【场景3：工具调用循环】                                              │       │
+│  │  用户提问："查询北京到上海的航班信息"                                │       │
+│  │  执行流程：                                                          │       │
+│  │    1. START → memory → task_decomposition → supervisor              │       │
+│  │    2. supervisor → transport_rag → transport_agent                   │       │
+│  │    3. transport_agent 生成响应，包含工具调用（查询航班API）          │       │
+│  │    4. transport_agent → collaboration_decision                       │       │
+│  │    5. collaboration_decision 判断：has_tool_calls=True               │       │
+│  │    6. collaboration_decision → tool_selector → api_tools             │       │
+│  │    7. api_tools 执行航班查询API                                      │       │
+│  │    8. api_tools → tool_result_handler（处理API结果）                 │       │
+│  │    9. tool_result_handler → collaboration_decision（循环）          │       │
+│  │   10. collaboration_decision 判断：无工具调用，无协作                 │       │
+│  │   11. collaboration_decision → reflection → summary → END          │       │
+│  │                                                                       │       │
+│  │  【场景4：复杂任务分解 + 多Agent协作】                                │       │
+│  │  用户提问："规划一次上海3天旅游，包括景点、交通、美食和预算"         │       │
+│  │  执行流程：                                                          │       │
+│  │    1. START → memory → task_decomposition                           │       │
+│  │    2. task_decomposition 判断为复杂任务，分解为子任务：              │       │
+│  │       - 子任务1：推荐景点                                            │       │
+│  │       - 子任务2：规划交通                                            │       │
+│  │       - 子任务3：推荐美食                                            │       │
+│  │       - 子任务4：预算估算                                            │       │
+│  │    3. task_decomposition → supervisor                               │       │
+│  │    4. supervisor → sights_rag → sights_agent（处理子任务1）         │       │
+│  │    5. sights_agent → collaboration_decision                         │       │
+│  │    6. collaboration_decision → supervisor（协作路由）               │       │
+│  │    7. supervisor → transport_rag → transport_agent（处理子任务2）   │       │
+│  │    8. transport_agent → collaboration_decision → supervisor          │       │
+│  │    9. supervisor → food_rag → food_agent（处理子任务3）             │       │
+│  │   10. food_agent → collaboration_decision → supervisor             │       │
+│  │   11. supervisor → finance_rag → finance_agent（处理子任务4）       │       │
+│  │   12. finance_agent → collaboration_decision → reflection          │       │
+│  │   13. reflection → summary（汇总所有子任务结果） → END              │       │
+│  │                                                                       │       │
+│  │  【场景5：工具调用 + Agent协作混合场景】                              │       │
+│  │  用户提问："帮我查询北京到上海的航班，并推荐上海的美食"             │       │
+│  │  执行流程：                                                          │       │
+│  │    1. START → memory → task_decomposition → supervisor              │       │
+│  │    2. supervisor → transport_rag → transport_agent                   │       │
+│  │    3. transport_agent 生成响应，包含航班查询工具调用                │       │
+│  │    4. transport_agent → collaboration_decision                       │       │
+│  │    5. collaboration_decision → tool_selector → api_tools             │       │
+│  │    6. api_tools → tool_result_handler → collaboration_decision       │       │
+│  │    7. collaboration_decision 判断：需要美食知识协作                 │       │
+│  │    8. collaboration_decision → supervisor（协作路由）                 │       │
+│  │    9. supervisor → food_rag → food_agent（推荐美食）                 │       │
+│  │   10. food_agent → collaboration_decision → reflection → END       │       │
+│  │                                                                       │       │
+│  └───────────────────────────────────────────────────────────────────────┘       │
+│                                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐                │
+│  │  【状态定义】AgentState（TypedDict）                                  │               │
+│  │  ├─ messages           → 对话消息                                   │               │
+│  │  ├─ trimmed_messages   → 裁剪后的消息                               │               │
+│  │  ├─ memory_context     → 三层记忆上下文                             │                │
+│  │  ├─ route              → Supervisor 路由结果                        │               │
+│  │  ├─ rag_context        → RAG 检索上下文                            │               │
+│  │  ├─ rag_sources        → RAG 来源文件列表                          │               │
+│  │  ├─ tool_type          → 工具类型（local/api/mcp）                  │               │
+│  │  ├─ tool_error         → 工具调用错误信息                           │               │
+│  │  ├─ has_tool_calls     → 是否有工具调用                             │               │
+│  │  ├─ collaboration_data → Agent 间共享数据                          │               │
+│  │  ├─ current_agent      → 当前执行的 Agent                          │               │
+│  │  ├─ agent_history      → Agent 执行历史                            │               │
+│  │  ├─ needs_collaboration→ 是否需要其他 Agent 协作                    │               │
+│  │  ├─ collaboration_target→ 协作目标 Agent                           │               │
+│  │  ├─ collaboration_reason→ 协作原因                                 │               │
+│  │  ├─ task_decomposition → 任务分解结果                              │               │
+│  │  ├─ subtasks           → 子任务列表                                │               │
+│  │  ├─ current_subtask    → 当前子任务索引                             │               │
+│  │  ├─ reflection_notes   → 反思笔记                                  │               │
+│  │  ├─ key_decisions      → 关键决策记录                              │               │
+│  │  └─ iteration_count    → 当前迭代次数（防死循环）                    │               │
+│  └──────────────────────────────────────────────────────────────────┘               │
+│                                                                                     │
+│  状态图节点清单（20个核心节点）:                                             │       │
 │  ├─ 记忆层：memory_node                                                  │       │
 │  ├─ 任务分解层：task_decomposition_node                                   │       │
 │  ├─ 监督层：supervisor_node, collaboration_decision_node                  │       │
