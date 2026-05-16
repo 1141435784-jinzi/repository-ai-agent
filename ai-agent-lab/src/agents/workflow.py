@@ -116,15 +116,17 @@ class AgentState(TypedDict):
     # 工具调用状态
     tool_type: Annotated[str, reduce_str]  # local/api/mcp
     tool_error: Annotated[str, reduce_str]  # 工具调用错误信息
+    tool_retry_count: Annotated[int, reduce_str]  # 工具调用重试计数（自愈节点使用）
     has_tool_calls: Annotated[bool, reduce_bool]  # 是否有工具调用
     
-    # Agent 协作
+    # Agent 协作与执行清单
     collaboration_data: Annotated[dict, reduce_dict]  # Agent 间共享数据
     current_agent: Annotated[str, reduce_str]  # 当前执行的 Agent
     agent_history: Annotated[list, reduce_list]  # Agent 执行历史
     needs_collaboration: Annotated[bool, reduce_bool]  # 是否需要其他 Agent 协作
     collaboration_target: Annotated[str, reduce_str]  # 协作目标 Agent
     collaboration_reason: Annotated[str, reduce_str]  # 协作原因
+    execution_plan: Annotated[list, reduce_list]  # 企业级执行清单 (Execution List)
     
     # 任务分解
     task_decomposition: Annotated[dict, reduce_dict]  # 任务分解结果
@@ -201,7 +203,7 @@ def memory_node(state: AgentState, config: RunnableConfig) -> dict:
     return {"memory_context": result.get("context", "")}
 
 
-def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
+async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     """监督者节点 - 负责路由决策"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("supervisor", thread_id)
@@ -214,12 +216,10 @@ def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.llm_call(thread_id, "supervisor", model=llm.model_name if hasattr(llm, 'model_name') else None)
         
         prompt = SUPERVISOR_PROMPT.invoke({"messages": [HumanMessage(content=user_query)]})
-        resp = llm.invoke(prompt)
+        resp = await llm.ainvoke(prompt)
         
         # 解析路由决策
         route_decision = resp.content.strip().lower()
-        
-        # 扩展路由逻辑
         if "sights" in route_decision or "景点" in route_decision or "景区" in route_decision or "旅游景点" in route_decision:
             route = "sights"
         elif "transport" in route_decision or "交通" in route_decision or "航班" in route_decision or "高铁" in route_decision or "地铁" in route_decision:
@@ -312,10 +312,30 @@ def _build_prompt_with_context(state: AgentState, prompt_template, messages: lis
     if rag_ctx:
         src_str = "、".join(sources)
         rag_msg = SystemMessage(
-            f"参考资料（来源：{src_str}）：\n{rag_ctx}\n\n"
+            content=f"参考资料（来源：{src_str}）：\n{rag_ctx}\n\n"
             "如无相关资料请直接回答，不要编造。"
         )
-        prompt_messages.messages.insert(-1, rag_msg)
+        
+        # 寻找安全的插入位置，避免破坏 AIMessage(tool_calls) -> ToolMessage 的连续性
+        # 策略：从后往前找，如果最后是 ToolMessage，则必须跳过它及其前面的 AIMessage
+        insert_idx = len(prompt_messages.messages)
+        while insert_idx > 0:
+            current_msg = prompt_messages.messages[insert_idx - 1]
+            if isinstance(current_msg, ToolMessage):
+                # 如果是 ToolMessage，必须继续往前找对应的 AIMessage
+                insert_idx -= 1
+                continue
+            if isinstance(current_msg, AIMessage) and hasattr(current_msg, 'tool_calls') and current_msg.tool_calls:
+                # 找到了触发工具调用的 AIMessage，RAG 必须在它之前
+                insert_idx -= 1
+                continue
+            # 找到非工具相关的消息，可以在此处之后插入
+            break
+        
+        # 确保不插入在消息列表的最末尾（除非列表为空），通常插在倒数第二个位置比较好，
+        # 但如果是为了补充背景知识，插在靠前的位置（如系统消息后）最稳妥。
+        # 这里选择插在搜索到的安全位置
+        prompt_messages.messages.insert(insert_idx, rag_msg)
 
     return prompt_messages.messages
 
@@ -352,8 +372,8 @@ async def _build_agent_response(
         else:
             llm_with_tools = llm
 
-        # 调用 LLM
-        resp = llm_with_tools.invoke(prompt_msgs)
+        # 调用 LLM（使用异步 ainvoke 以支持流式输出）
+        resp = await llm_with_tools.ainvoke(prompt_msgs)
         
         # 检查工具调用
         has_tool_calls = hasattr(resp, 'tool_calls') and resp.tool_calls
@@ -382,9 +402,17 @@ async def agent_tech_node(state: AgentState, config: RunnableConfig) -> dict:
     """Agent技术专家节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("agent_tech", thread_id)
+    
+    # 更新执行清单状态
+    plan = state.get("execution_plan", [])
+    new_plan = [
+        {**t, "status": "completed" if t["agent"] == "agent_tech" and t["status"] == "pending" else t["status"]}
+        for t in plan
+    ]
+    
     result = await _build_agent_response(state, config, AGENT_PROMPT)
     workflow_logger.node_exit("agent_tech", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "agent_tech", "execution_plan": new_plan}
 
 
 async def travel_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -393,7 +421,7 @@ async def travel_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("travel", thread_id)
     result = await _build_agent_response(state, config, TRAVEL_TECH_PROMPT)
     workflow_logger.node_exit("travel", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "travel"}
 
 
 async def finance_rag_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -422,9 +450,13 @@ async def finance_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """财务规划专家节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("finance_agent", thread_id)
+    
+    plan = state.get("execution_plan", [])
+    new_plan = [{**t, "status": "completed" if t["agent"] == "finance" and t["status"] == "pending" else t["status"]} for t in plan]
+    
     result = await _build_agent_response(state, config, FINANCE_PROMPT)
     workflow_logger.node_exit("finance_agent", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "finance", "execution_plan": new_plan}
 
 
 async def food_rag_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -453,9 +485,13 @@ async def food_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """美食推荐专家节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("food_agent", thread_id)
+    
+    plan = state.get("execution_plan", [])
+    new_plan = [{**t, "status": "completed" if t["agent"] == "food" and t["status"] == "pending" else t["status"]} for t in plan]
+    
     result = await _build_agent_response(state, config, FOOD_PROMPT)
     workflow_logger.node_exit("food_agent", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "food", "execution_plan": new_plan}
 
 
 async def sights_rag_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -484,9 +520,13 @@ async def sights_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """景点推荐专家节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("sights_agent", thread_id)
+    
+    plan = state.get("execution_plan", [])
+    new_plan = [{**t, "status": "completed" if t["agent"] == "sights" and t["status"] == "pending" else t["status"]} for t in plan]
+    
     result = await _build_agent_response(state, config, SIGHTS_PROMPT)
     workflow_logger.node_exit("sights_agent", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "sights", "execution_plan": new_plan}
 
 
 async def transport_rag_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -515,16 +555,20 @@ async def transport_agent_node(state: AgentState, config: RunnableConfig) -> dic
     """交通出行专家节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("transport_agent", thread_id)
+    
+    plan = state.get("execution_plan", [])
+    new_plan = [{**t, "status": "completed" if t["agent"] == "transport" and t["status"] == "pending" else t["status"]} for t in plan]
+    
     result = await _build_agent_response(state, config, TRANSPORT_PROMPT)
     workflow_logger.node_exit("transport_agent", thread_id, "响应生成完成")
-    return result
+    return {**result, "current_agent": "transport", "execution_plan": new_plan}
 
 
 # ------------------------------
 # 任务分解节点（新增）
 # ------------------------------
-def task_decomposition_node(state: AgentState, config: RunnableConfig) -> dict:
-    """任务分解节点 - 将复杂任务分解为子任务"""
+async def task_decomposition_node(state: AgentState, config: RunnableConfig) -> dict:
+    """任务分解节点 - 将复杂任务分解为子任务并生成执行计划"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("task_decomposition", thread_id)
     
@@ -541,59 +585,70 @@ def task_decomposition_node(state: AgentState, config: RunnableConfig) -> dict:
         ]
         
         if sum(complexity_indicators) >= 2:
-            # 复杂任务，进行分解
             llm = get_llm(provider="deepseek", streaming=False)
             
             decomposition_prompt = f"""
-            请将以下用户请求分解为多个子任务：
+            请将以下用户请求分解为多个逻辑独立的子任务，并为每个子任务指定最合适的专家。
             
             用户请求：{user_query}
             
+            可选专家列表：
+            - sights: 景点、景区、旅游规划
+            - transport: 交通、出行、订票
+            - finance: 财务、预算、花费
+            - food: 美食、餐厅推荐
+            - agent_tech: 其他通用技术或综合性问题
+            
             请输出JSON格式，包含以下字段：
-            - "is_complex": 是否为复杂任务（布尔值）
-            - "reason": 分解原因
-            - "subtasks": 子任务列表（每个子任务包含 "task" 和 "description"）
-            - "order": 子任务执行顺序说明
+            - "is_complex": true
+            - "execution_plan": 子任务清单，每个任务包含:
+                - "id": 任务编号 (1, 2, 3...)
+                - "task": 任务简述
+                - "agent": 推荐专家名称 (sights/transport/finance/food/agent_tech)
+                - "status": "pending"
+            - "reason": 分解逻辑说明
             
             示例输出：
             {{
                 "is_complex": true,
-                "reason": "用户请求包含多个步骤",
-                "subtasks": [
-                    {{"task": "子任务1", "description": "描述..."}},
-                    {{"task": "子任务2", "description": "描述..."}}
+                "execution_plan": [
+                    {{"id": 1, "task": "查询深圳天气", "agent": "agent_tech", "status": "pending"}},
+                    {{"id": 2, "task": "推荐深圳景点", "agent": "sights", "status": "pending"}}
                 ],
-                "order": "先执行子任务1，再执行子任务2"
+                "reason": "需要先了解天气再规划户外景点"
             }}
             """
             
-            resp = llm.invoke(decomposition_prompt)
+            resp = await llm.ainvoke(decomposition_prompt)
             try:
-                decomposition = json.loads(resp.content)
-            except:
-                decomposition = {
-                    "is_complex": False,
-                    "reason": "解析失败，视为简单任务",
-                    "subtasks": [],
-                    "order": ""
-                }
-            
-            if decomposition.get("is_complex") and decomposition.get("subtasks"):
-                workflow_logger.logger.info(f"🔍 [{thread_id[:8]}] 任务分解完成: {len(decomposition['subtasks'])} 个子任务")
-                workflow_logger.node_exit("task_decomposition", thread_id, "复杂任务已分解")
-                return {
-                    "task_decomposition": decomposition,
-                    "subtasks": decomposition["subtasks"],
-                    "current_subtask": 0,
-                }
+                # 去除可能的 markdown 代码块标记
+                content = resp.content.strip()
+                if content.startswith("```json"):
+                    content = content[7:-3].strip()
+                elif content.startswith("```"):
+                    content = content[3:-3].strip()
+                
+                decomposition = json.loads(content)
+                if decomposition.get("is_complex") and decomposition.get("execution_plan"):
+                    workflow_logger.logger.info(f"🔍 [{thread_id[:8]}] 任务分解完成: {len(decomposition['execution_plan'])} 个步骤")
+                    return {
+                        "task_decomposition": decomposition,
+                        "execution_plan": decomposition["execution_plan"],
+                        "current_subtask": 0,
+                    }
+            except Exception as e:
+                workflow_logger.logger.error(f"❌ 任务分解解析失败: {e}")
         
-        # 简单任务，不需要分解
-        workflow_logger.node_exit("task_decomposition", thread_id, "简单任务，无需分解")
-        return {"task_decomposition": {"is_complex": False}}
+        # 简单任务，直接指向技术专家（或通过路由）
+        workflow_logger.node_exit("task_decomposition", thread_id, "简单任务，生成默认计划")
+        return {
+            "task_decomposition": {"is_complex": False},
+            "execution_plan": [{"id": 1, "task": user_query, "agent": "agent_tech", "status": "pending"}]
+        }
         
     except Exception as e:
         workflow_logger.error(thread_id, "task_decomposition", e)
-        return {"task_decomposition": {"is_complex": False}}
+        return {"execution_plan": [{"id": 1, "task": "处理用户请求", "agent": "supervisor", "status": "pending"}]}
 
 
 # ------------------------------
@@ -671,7 +726,7 @@ def collaboration_decision_node(state: AgentState, config: RunnableConfig) -> di
 # 反思节点（新增）
 # ------------------------------
 def reflection_node(state: AgentState, config: RunnableConfig) -> dict:
-    """反思节点 - 回顾对话历史，记录关键决策和反思"""
+    """反思节点 - 回顾对话历史，记录关键决策并进行上下文压缩（裁剪）"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("reflection", thread_id)
     
@@ -679,9 +734,8 @@ def reflection_node(state: AgentState, config: RunnableConfig) -> dict:
         messages = state["messages"]
         agent_history = state.get("agent_history", [])
         key_decisions = []
-        reflection_notes = []
         
-        # 分析对话历史，提取关键决策
+        # 1. 提取关键决策
         for i, msg in enumerate(messages):
             if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
                 tool_calls = msg.tool_calls if isinstance(msg.tool_calls, list) else [msg.tool_calls]
@@ -690,30 +744,22 @@ def reflection_node(state: AgentState, config: RunnableConfig) -> dict:
                     key_decisions.append({
                         "step": i,
                         "decision_type": "tool_call",
-                        "tool_name": tool_name,
-                        "args": tc.get("args", {}) if isinstance(tc, dict) else {}
+                        "tool_name": tool_name
                     })
         
-        # 分析 Agent 执行历史
-        if agent_history:
-            reflection_notes.append(f"执行过的 Agent: {', '.join(agent_history)}")
+        # 2. 上下文压缩（剪枝策略）：
+        # 如果消息超过 15 条，保留前 2 条（系统/起始）和最后 8 条
+        # 这样既保留了任务目标，又保留了最近的上下文，同时移除了中间冗余的工具调用过程
+        trimmed_messages = messages
+        if len(messages) > 15:
+            trimmed_messages = messages[:2] + messages[-8:]
+            workflow_logger.logger.info(f"✂️ [{thread_id[:8]}] 上下文剪枝: {len(messages)} -> {len(trimmed_messages)} 条消息")
         
-        # 分析工具调用错误
-        tool_error = state.get("tool_error", "")
-        if tool_error:
-            reflection_notes.append(f"工具调用失败: {tool_error}")
-        
-        # 分析任务分解结果
-        task_decomp = state.get("task_decomposition", {})
-        if task_decomp.get("is_complex"):
-            reflection_notes.append(f"复杂任务分解为 {len(task_decomp.get('subtasks', []))} 个子任务")
-        
-        workflow_logger.logger.info(f"💭 [{thread_id[:8]}] 反思完成: {len(key_decisions)} 个关键决策")
-        workflow_logger.node_exit("reflection", thread_id, "反思完成")
-        
+        workflow_logger.node_exit("reflection", thread_id, "反思与剪枝完成")
         return {
             "key_decisions": key_decisions,
-            "reflection_notes": reflection_notes
+            "messages": trimmed_messages, # 更新消息列表以释放 Token 压力
+            "reflection_notes": [f"已执行步数: {len(agent_history)}"]
         }
         
     except Exception as e:
@@ -737,129 +783,41 @@ async def _call_tool_with_retry(tool_node: ToolNode, state: AgentState, config: 
 
 
 # ------------------------------
-# 工具选择器节点
+# 统一工具执行节点（支持混合调用和重试）
 # ------------------------------
-def tool_selector_node(state: AgentState, config: RunnableConfig) -> dict:
-    """工具类型选择器 - 根据工具名判断工具类型"""
+async def unified_tool_node(state: AgentState, config: RunnableConfig) -> dict:
+    """统一工具执行节点 - 支持多种类型工具同时调用，并具备重试机制"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
-    last_msg = state["messages"][-1]
-    
-    if not hasattr(last_msg, "tool_calls") or not last_msg.tool_calls:
-        tool_type = "local_tools"
-    else:
-        # 获取第一个工具调用
-        tool_calls = last_msg.tool_calls if isinstance(last_msg.tool_calls, list) else [last_msg.tool_calls]
-        tool_call = tool_calls[0]
-        tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else str(tool_call)
-        
-        # 根据工具名判断类型
-        if tool_name.startswith("mcp_") or "_mcp_" in tool_name:
-            tool_type = "mcp_tools"
-        elif tool_name.startswith("api_") or "_api_" in tool_name:
-            tool_type = "api_tools"
-        else:
-            tool_type = "local_tools"
-    
-    logger.info(f"🔧 [{thread_id[:8]}] 工具选择: {tool_name} -> {tool_type}")
-    return {"tool_type": tool_type}
-
-
-# ------------------------------
-# 工具执行节点（按类型）
-# ------------------------------
-async def local_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """本地工具执行节点（支持重试）"""
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("local_tools", thread_id)
+    workflow_logger.node_enter("tools", thread_id)
     
     try:
-        tools = await tool_manager.get_tools_by_type("local")
+        # 获取所有可用工具
+        tools = await tool_manager.get_tools()
         if not tools:
-            logger.warning(f"[{thread_id[:8]}] 没有可用的本地工具")
-            return {"tool_error": "没有可用的本地工具"}
+            logger.warning(f"[{thread_id[:8]}] 没有可用的工具")
+            return {"tool_error": "没有可用的工具"}
         
+        # 创建 LangGraph 的 ToolNode
         tool_node = ToolNode(tools)
         
         # 使用带重试的工具调用
         result = await _call_tool_with_retry(tool_node, state, config)
         
+        # 记录工具执行结果日志
         if "messages" in result:
             for msg in result["messages"]:
                 if isinstance(msg, ToolMessage):
-                    workflow_logger.tool_result(thread_id, msg.name, True, msg.content[:50])
+                    success = not str(msg.content).startswith("Error")
+                    workflow_logger.tool_result(thread_id, msg.name, success, str(msg.content)[:100])
         
-        workflow_logger.node_exit("local_tools", thread_id, "执行完成")
+        workflow_logger.node_exit("tools", thread_id, "执行完成")
         return result
         
     except ToolCallError as e:
-        workflow_logger.error(thread_id, "local_tools", f"工具调用失败（已重试）: {e}")
+        workflow_logger.error(thread_id, "tools", f"工具调用失败（已重试）: {e}")
         return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
     except Exception as e:
-        workflow_logger.error(thread_id, "local_tools", e)
-        return {"tool_error": str(e)[:150]}
-
-
-async def api_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """API工具执行节点（支持重试）"""
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("api_tools", thread_id)
-    
-    try:
-        tools = await tool_manager.get_tools_by_type("api")
-        if not tools:
-            logger.warning(f"[{thread_id[:8]}] 没有可用的API工具")
-            return {"tool_error": "没有可用的API工具"}
-        
-        tool_node = ToolNode(tools)
-        
-        # 使用带重试的工具调用
-        result = await _call_tool_with_retry(tool_node, state, config)
-        
-        if "messages" in result:
-            for msg in result["messages"]:
-                if isinstance(msg, ToolMessage):
-                    workflow_logger.tool_result(thread_id, msg.name, True, msg.content[:50])
-        
-        workflow_logger.node_exit("api_tools", thread_id, "执行完成")
-        return result
-        
-    except ToolCallError as e:
-        workflow_logger.error(thread_id, "api_tools", f"工具调用失败（已重试）: {e}")
-        return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
-    except Exception as e:
-        workflow_logger.error(thread_id, "api_tools", e)
-        return {"tool_error": str(e)[:150]}
-
-
-async def mcp_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-    """MCP工具执行节点（支持重试）"""
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("mcp_tools", thread_id)
-    
-    try:
-        tools = await tool_manager.get_tools_by_type("mcp")
-        if not tools:
-            logger.warning(f"[{thread_id[:8]}] 没有可用的MCP工具")
-            return {"tool_error": "没有可用的MCP工具"}
-        
-        tool_node = ToolNode(tools)
-        
-        # 使用带重试的工具调用
-        result = await _call_tool_with_retry(tool_node, state, config)
-        
-        if "messages" in result:
-            for msg in result["messages"]:
-                if isinstance(msg, ToolMessage):
-                    workflow_logger.tool_result(thread_id, msg.name, True, msg.content[:50])
-        
-        workflow_logger.node_exit("mcp_tools", thread_id, "执行完成")
-        return result
-        
-    except ToolCallError as e:
-        workflow_logger.error(thread_id, "mcp_tools", f"工具调用失败（已重试）: {e}")
-        return {"tool_error": f"工具调用失败: {str(e)[:150]}"}
-    except Exception as e:
-        workflow_logger.error(thread_id, "mcp_tools", e)
+        workflow_logger.error(thread_id, "tools", e)
         return {"tool_error": str(e)[:150]}
 
 
@@ -867,7 +825,7 @@ async def mcp_tool_node(state: AgentState, config: RunnableConfig) -> dict:
 # 工具结果处理节点
 # ------------------------------
 async def tool_result_handler(state: AgentState, config: RunnableConfig) -> dict:
-    """工具结果处理节点 - 统一处理工具执行结果"""
+    """工具结果处理节点 - 统一处理工具执行结果并更新任务状态"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("tool_result_handler", thread_id)
     
@@ -875,49 +833,69 @@ async def tool_result_handler(state: AgentState, config: RunnableConfig) -> dict
         # 检查是否有工具错误
         tool_error = state.get("tool_error", "")
         if tool_error:
-            # 创建错误消息
-            error_msg = AIMessage(
-                content=f"工具执行失败：{tool_error}\n\n我将尝试其他方式回答您的问题。"
-            )
-            workflow_logger.node_exit("tool_result_handler", thread_id, "工具执行失败")
-            return {"messages": [error_msg], "tool_error": ""}
+            # 记录错误并增加重试计数
+            retry_count = state.get("tool_retry_count", 0) + 1
+            workflow_logger.node_exit("tool_result_handler", thread_id, f"工具报错，重试计数: {retry_count}")
+            return {"tool_retry_count": retry_count}
         
-        # 获取最后一条消息
-        last_msg = state["messages"][-1]
-        
-        # 如果是 ToolMessage，创建一个总结消息
-        if isinstance(last_msg, ToolMessage):
-            # 创建一个临时的 AIMessage 来总结工具结果
-            # 这将触发 should_continue 检查，决定是否继续调用工具
-            summary_msg = AIMessage(
-                content=f"工具执行完成，结果：{last_msg.content[:200]}..."
-            )
-            workflow_logger.node_exit("tool_result_handler", thread_id, "工具执行成功")
-            return {"messages": [summary_msg]}
-        
-        workflow_logger.node_exit("tool_result_handler", thread_id, "无需处理")
-        return {}
+        # 成功执行，重置重试计数
+        workflow_logger.node_exit("tool_result_handler", thread_id, "工具执行成功")
+        return {"tool_retry_count": 0}
         
     except Exception as e:
         workflow_logger.error(thread_id, "tool_result_handler", e)
         return {"tool_error": str(e)[:150]}
 
 
+async def self_healing_node(state: AgentState, config: RunnableConfig) -> dict:
+    """自愈节点 - 分析工具错误并尝试修复参数或更换策略"""
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+    workflow_logger.node_enter("self_healing", thread_id)
+    
+    try:
+        retry_count = state.get("tool_retry_count", 0)
+        if retry_count >= 3:
+            # 超过最大尝试次数，告知用户并停止
+            workflow_logger.node_exit("self_healing", thread_id, "已达最大重试次数，放弃自愈")
+            return {"messages": [AIMessage(content="抱歉，我多次尝试调用工具都失败了，可能暂时无法为您处理此请求。")]}
+
+        # 获取最后的消息（通常是工具调用和对应的错误）
+        last_msgs = state["messages"][-2:]
+        error_info = state.get("tool_error", "未知错误")
+        
+        llm = get_llm(provider="deepseek", streaming=False)
+        
+        healing_prompt = f"""
+        你是一个自愈专家。上一个工具调用失败了。
+        
+        工具调用信息：{last_msgs[0]}
+        错误信息：{error_info}
+        
+        请分析原因并给出一个修正后的建议：
+        1. 如果是参数格式问题，请给出正确的参数。
+        2. 如果是工具不可用，请建议更换其他工具或直接回答。
+        
+        请直接输出修复建议或说明，不要带多余废话。
+        """
+        
+        resp = await llm.ainvoke(healing_prompt)
+        workflow_logger.node_exit("self_healing", thread_id, "已生成修复策略")
+        return {"messages": [AIMessage(content=f"🔧 自动尝试修复中: {resp.content}")]}
+        
+    except Exception as e:
+        workflow_logger.error(thread_id, "self_healing", e)
+        return {}
+
+
 # ------------------------------
 # 工具循环控制（防死循环）
 # ------------------------------
 def should_continue(state: AgentState) -> Literal["tool_selector", "summary"]:
-    """决定是否继续工具调用循环
-    
-    优化改进：
-    1. 支持 END 节点路由 - Agent 可以直接返回结果，无需强制走工具调用
-    2. 使用显式迭代计数替代消息计数
-    3. 修复 thread_id 未定义的 bug
-    """
+    """决定是否继续工具调用循环"""
     last = state["messages"][-1]
     thread_id = state.get("route", "default")
 
-    # 最大迭代限制（使用显式迭代计数）
+    # 最大迭代限制
     iteration_count = state.get("iteration_count", 0)
     if iteration_count >= MAX_ITERATIONS:
         logger.info(f"🔄 [{thread_id[:8]}] 达到最大迭代次数 {MAX_ITERATIONS}，结束循环")
@@ -925,15 +903,8 @@ def should_continue(state: AgentState) -> Literal["tool_selector", "summary"]:
 
     # 检查是否有工具调用
     if hasattr(last, "tool_calls") and last.tool_calls:
-        # 确保 tool_calls 是有效的列表
-        if isinstance(last.tool_calls, list) and len(last.tool_calls) > 0:
-            logger.info(f"🔄 [{thread_id[:8]}] 检测到 {len(last.tool_calls)} 个工具调用")
-            return "tool_selector"
-        elif last.tool_calls is not None:
-            logger.info(f"🔄 [{thread_id[:8]}] 检测到工具调用（非标准格式）")
-            return "tool_selector"
+        return "tool_selector"
 
-    logger.info(f"🔄 [{thread_id[:8]}] 没有工具调用，直接进入总结")
     return "summary"
 
 
@@ -946,195 +917,187 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("summary", thread_id)
     
     try:
-        # 获取对话历史中的关键信息
         messages = state["messages"]
-        
-        # 找到最后一个有意义的回复
-        last_meaningful_msg = None
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.content and not hasattr(msg, 'tool_calls'):
-                last_meaningful_msg = msg
-                break
+        last_meaningful_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage) and m.content and not m.tool_calls), None)
         
         if last_meaningful_msg:
-            # 使用最后一个 AIMessage 作为回复
             workflow_logger.node_exit("summary", thread_id, "使用现有回复")
             return {"messages": [last_meaningful_msg]}
         
-        # 如果没有找到有意义的回复，生成一个默认回复
-        summary_content = "感谢您的提问！如有其他问题，请随时告诉我。"
-        summary_msg = AIMessage(content=summary_content)
-        
+        summary_msg = AIMessage(content="感谢您的提问！如有其他问题，请随时告诉我。")
         workflow_logger.node_exit("summary", thread_id, "生成总结")
         return {"messages": [summary_msg]}
         
     except Exception as e:
         workflow_logger.error(thread_id, "summary", e)
-        return {
-            "messages": [AIMessage(content="抱歉，总结过程中出现错误。")]
-        }
+        return {"messages": [AIMessage(content="抱歉，总结过程中出现错误。")]}
 
 
 # ------------------------------
-# 路由函数
+# 企业级执行清单路由 (Execution List Router)
 # ------------------------------
-def route_by_supervisor(state: AgentState) -> str:
-    """根据 supervisor 的决策进行路由"""
-    route = state.get("route", "agent_tech")
-    return route
+def execution_list_router(state: AgentState) -> str:
+    """根据执行清单决定下一个节点"""
+    plan = state.get("execution_plan", [])
+    
+    # 寻找第一个 pending 的任务
+    next_task = next((t for t in plan if t["status"] == "pending"), None)
+    
+    if not next_task:
+        # 所有任务已完成，进入反思
+        return "reflection"
+    
+    # 映射专家名称到 RAG 节点
+    agent_map = {
+        "sights": "sights_rag",
+        "transport": "transport_rag",
+        "finance": "finance_rag",
+        "food": "food_rag",
+        "agent_tech": "agent_tech_rag",
+        "supervisor": "supervisor"
+    }
+    
+    target = agent_map.get(next_task["agent"], "agent_tech_rag")
+    
+    # 更新任务状态为 in_progress（模拟）
+    # 注意：在路由器里不直接修改 state，而是在节点进入时修改
+    return target
 
 
-def route_back_to_agent(state: AgentState) -> str:
-    """工具执行完成后回到对应的 Agent"""
-    route = state.get("route", "agent_tech")
-    if route == "travel":
-        return "travel"
-    return "agent_tech"
+def collaboration_or_tool_decision(state: AgentState) -> str:
+    """协作和工具调用决策路由 (增强自愈路径)"""
+    last_msg = state["messages"][-1]
+    
+    # 1. 如果有工具错误且未达上限，去自愈节点
+    tool_error = state.get("tool_error", "")
+    retry_count = state.get("tool_retry_count", 0)
+    if tool_error and retry_count > 0:
+        return "self_healing"
 
-
-# ------------------------------
-# 协作路由函数（新增）
-# ------------------------------
-def route_to_collaboration_target(state: AgentState) -> str:
-    """根据协作决策路由到目标 Agent"""
-    target = state.get("collaboration_target", "")
-    if target == "sights":
-        return "sights_rag"
-    elif target == "transport":
-        return "transport_rag"
-    elif target == "finance":
-        return "finance_rag"
-    elif target == "food":
-        return "food_rag"
-    elif target == "supervisor":
-        return "supervisor"
-    return "summary"
-
-
-def collaboration_or_tool_decision(state: AgentState) -> Literal["tool_selector", "supervisor", "reflection"]:
-    """协作和工具调用决策路由"""
-    # 优先检查工具调用
-    if state.get("has_tool_calls", False):
+    # 2. 如果最后一条消息是工具调用请求，去执行工具
+    is_tool_call = hasattr(last_msg, "tool_calls") and last_msg.tool_calls
+    if is_tool_call:
         return "tool_selector"
     
-    # 然后检查协作需求
-    if state.get("needs_collaboration", False):
-        return "supervisor"
-    
-    # 不需要工具调用和协作，进行反思总结
-    return "reflection"
+    # 3. 如果最后一条消息是工具执行结果，返回对应的 Agent 进行总结
+    is_tool_result = isinstance(last_msg, ToolMessage) or (isinstance(last_msg, dict) and last_msg.get("type") == "tool")
+    if is_tool_result:
+        current_agent = state.get("current_agent") or "agent_tech"
+        agent_node_map = {
+            "agent_tech": "agent_tech",
+            "sights": "sights_agent",
+            "transport": "transport_agent",
+            "finance": "finance_agent",
+            "food": "food_agent"
+        }
+        return agent_node_map.get(current_agent, "agent_tech")
+
+    # 4. 如果当前子任务已完成，回到执行清单路由器
+    return "execution_router"
 
 
 # ============================================================
-# 第四步：构建流程图（企业级架构）
+# 第四步：构建流程图（企业级架构 - 优化版）
 # ============================================================
 def _build_graph() -> StateGraph:
-    """构建完整的 Agent 工作流图"""
+    """构建完整的 Agent 工作流图 (SOTA 架构)"""
     g = StateGraph(AgentState)
 
-    # 核心节点 - 记忆和监督者
+    # 基础节点
     g.add_node("memory", memory_node)
-    g.add_node("supervisor", supervisor_node)
-    
-    # 新增节点 - 任务分解和协作
     g.add_node("task_decomposition", task_decomposition_node)
-    g.add_node("collaboration_decision", collaboration_decision_node)
+    g.add_node("supervisor", supervisor_node)
     g.add_node("reflection", reflection_node)
+    g.add_node("summary", summary_node)
     
-    # 核心节点 - Agent技术专家
+    # 执行清单辅助节点
+    g.add_node("execution_router_node", lambda x: x) # 占位节点
+    
+    # 专家节点
     g.add_node("agent_tech_rag", agent_tech_rag_node)
     g.add_node("agent_tech", agent_tech_node)
-    
-    # 核心节点 - 景点专家
     g.add_node("sights_rag", sights_rag_node)
     g.add_node("sights_agent", sights_agent_node)
-    
-    # 核心节点 - 交通专家
     g.add_node("transport_rag", transport_rag_node)
     g.add_node("transport_agent", transport_agent_node)
-    
-    # 核心节点 - 财务专家
     g.add_node("finance_rag", finance_rag_node)
     g.add_node("finance_agent", finance_agent_node)
-    
-    # 核心节点 - 美食专家
     g.add_node("food_rag", food_rag_node)
     g.add_node("food_agent", food_agent_node)
     
-    # 工具选择器和执行节点
-    g.add_node("tool_selector", tool_selector_node)
-    g.add_node("local_tools", local_tool_node)
-    g.add_node("api_tools", api_tool_node)
-    g.add_node("mcp_tools", mcp_tool_node)
+    # 工具与自愈
+    g.add_node("tools", unified_tool_node)
     g.add_node("tool_result_handler", tool_result_handler)
-    
-    # 总结节点
-    g.add_node("summary", summary_node)
+    g.add_node("self_healing", self_healing_node)
 
-    # 主线流程：START -> memory -> task_decomposition -> supervisor
+    # --- 流程连线 ---
+    
+    # 1. 启动与计划
     g.add_edge(START, "memory")
     g.add_edge("memory", "task_decomposition")
-    g.add_edge("task_decomposition", "supervisor")
-
-    # 路由分支：supervisor -> RAG -> Agent
+    g.add_edge("task_decomposition", "execution_router_node")
+    
+    # 2. 执行清单动态路由
     g.add_conditional_edges(
-        "supervisor",
-        route_by_supervisor,
+        "execution_router_node",
+        execution_list_router,
         {
-            "agent_tech": "agent_tech_rag",
-            "sights": "sights_rag",
-            "transport": "transport_rag",
-            "finance": "finance_rag",
-            "food": "food_rag",
+            "sights_rag": "sights_rag",
+            "transport_rag": "transport_rag",
+            "finance_rag": "finance_rag",
+            "food_rag": "food_rag",
+            "agent_tech_rag": "agent_tech_rag",
+            "supervisor": "supervisor",
+            "reflection": "reflection"
         }
     )
     
-    # RAG -> Agent 连接
+    # 3. 专家协作
     g.add_edge("agent_tech_rag", "agent_tech")
     g.add_edge("sights_rag", "sights_agent")
     g.add_edge("transport_rag", "transport_agent")
     g.add_edge("finance_rag", "finance_agent")
     g.add_edge("food_rag", "food_agent")
-
-    # Agent 决策：先判断协作需求和工具调用
-    g.add_edge("agent_tech", "collaboration_decision")
-    g.add_edge("sights_agent", "collaboration_decision")
-    g.add_edge("transport_agent", "collaboration_decision")
-    g.add_edge("finance_agent", "collaboration_decision")
-    g.add_edge("food_agent", "collaboration_decision")
     
-    # 协作决策路由：工具调用 > 协作 > 反思总结
+    # 所有专家执行完后进入决策
+    for node in ["agent_tech", "sights_agent", "transport_agent", "finance_agent", "food_agent", "supervisor"]:
+        g.add_conditional_edges(
+            node,
+            collaboration_or_tool_decision,
+            {
+                "tool_selector": "tools",
+                "self_healing": "self_healing",
+                "execution_router": "execution_router_node",
+                "agent_tech": "agent_tech",
+                "sights_agent": "sights_agent",
+                "transport_agent": "transport_agent",
+                "finance_agent": "finance_agent",
+                "food_agent": "food_agent"
+            }
+        )
+
+    # 4. 工具循环与自愈
+    g.add_edge("tools", "tool_result_handler")
     g.add_conditional_edges(
-        "collaboration_decision",
+        "tool_result_handler",
         collaboration_or_tool_decision,
         {
-            "tool_selector": "tool_selector",      # 需要工具调用
-            "supervisor": "supervisor",            # 需要 Agent 协作
-            "reflection": "reflection",            # 不需要工具和协作，进行反思总结
+            "self_healing": "self_healing",
+            "tool_selector": "tools", # 理论上 handler 不会直接回 tools，但保留兼容
+            "execution_router": "execution_router_node",
+            "agent_tech": "agent_tech",
+            "sights_agent": "sights_agent",
+            "transport_agent": "transport_agent",
+            "finance_agent": "finance_agent",
+            "food_agent": "food_agent"
         }
     )
     
-    # 反思节点 -> 总结节点
+    # 自愈后尝试重新执行专家逻辑
+    g.add_edge("self_healing", "execution_router_node")
+
+    # 5. 结束
     g.add_edge("reflection", "summary")
-
-    # 工具选择器 -> 按类型执行
-    g.add_conditional_edges(
-        "tool_selector",
-        lambda state: state.get("tool_type", "local_tools"),
-        {
-            "local_tools": "local_tools",
-            "api_tools": "api_tools",
-            "mcp_tools": "mcp_tools",
-        }
-    )
-
-    # 工具执行完成 -> 结果处理 -> collaboration_decision（检查是否需要继续协作）
-    g.add_edge("local_tools", "tool_result_handler")
-    g.add_edge("api_tools", "tool_result_handler")
-    g.add_edge("mcp_tools", "tool_result_handler")
-    g.add_edge("tool_result_handler", "collaboration_decision")
-
-    # 总结 -> 结束
     g.add_edge("summary", END)
 
     return g

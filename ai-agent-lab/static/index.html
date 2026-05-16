@@ -516,14 +516,24 @@
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let fullText = '';
+            let buffer = ''; // 新增：用于处理 SSE 分包的缓冲区
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 const chunk = decoder.decode(value, { stream: true });
+                buffer += chunk; // 将新到的数据加入缓冲区
+
                 // 解析 SSE 数据行
-                const lines = chunk.split('\n');
+                // SSE 规范：数据以 \n\n 分隔
+                let boundary = buffer.lastIndexOf('\n\n');
+                if (boundary === -1) continue; // 还没有完整的消息，继续等待
+
+                const completeData = buffer.substring(0, boundary);
+                buffer = buffer.substring(boundary + 2); // 剩下的存回缓冲区
+
+                const lines = completeData.split('\n');
                 for (const line of lines) {
                     if (!line.startsWith('data: ')) continue;
                     const data = line.slice(6);
@@ -535,6 +545,20 @@
                     if (data.startsWith('[REPLACE]')) {
                         // 安全防护：服务端检测到敏感信息泄露，用安全文本替换
                         fullText = data.slice(9);
+                        continue;
+                    }
+                    if (data.startsWith('[TOOL_START]')) {
+                        try {
+                            const toolData = JSON.parse(data.slice(12));
+                            // 在 UI 上显示一个精简的工具调用状态
+                            fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
+                        } catch (e) {}
+                        continue;
+                    }
+                    if (data.startsWith('[TOOL_RESULT]')) {
+                        // 隐藏原始工具结果，保持界面整洁
+                        // 如果需要调试，可以在 console 打印
+                        console.log('Tool Result:', data.slice(13));
                         continue;
                     }
                     // 还原服务端转义的换行符
