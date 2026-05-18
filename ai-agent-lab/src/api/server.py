@@ -98,9 +98,9 @@ async def lifespan(app: FastAPI):
     # 1. 初始化 MCP 管理器（可选功能）
     PROMETHEUS_ENABLED = False
     try:
-        from src.tools import create_mcp_manager
-        from src.metrics import PROMETHEUS_ENABLED
-        mcp_manager = await create_mcp_manager()
+        from src.tools import get_mcp_manager
+        from src.metrics import PROMETHEUS_AVAILABLE
+        mcp_manager = await get_mcp_manager()
         if mcp_manager:
             logger.info("✅ MCP 管理器初始化成功")
         else:
@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     # 检查 Prometheus 是否可用
-    if PROMETHEUS_ENABLED:
+    if PROMETHEUS_AVAILABLE:
         logger.info("Prometheus 监控已启用")
     else:
         logger.warning("Prometheus 监控未启用，请安装 prometheus-client")
@@ -202,7 +202,6 @@ app.add_middleware(
 # 静态文件服务配置
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 # ============================================================
 # 健康检查
 # ============================================================
@@ -215,55 +214,10 @@ async def health_check():
         "version": "1.0.0"
     }
 
-
-# ============================================================
-# 对话接口
-# ============================================================
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """聊天接口"""
-    from src.agents.workflow import agent_executor
-    from src.memory.manager import get_memory_manager
-
-    try:
-        thread_id = request.thread_id
-        if not thread_id:
-            thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        memory_manager = get_memory_manager()
-
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "model": "deepseek" if DEEPSEEK_API_KEY else "ollama",
-            }
-        }
-
-        result = await agent_executor.ainvoke(
-            {"messages": [("user", request.message)]},
-            config=config
-        )
-
-        response = result.get("messages", [])[-1].content
-        sources = result.get("sources", [])
-        found_in_kb = result.get("found_in_kb", False)
-
-        return ChatResponse(
-            response=response,
-            thread_id=thread_id,
-            sources=sources,
-            found_in_kb=found_in_kb
-        )
-
-    except Exception as e:
-        logger.error(f"聊天接口出错: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """流式聊天接口 - 实时返回AI响应"""
-    from src.agents.workflow import agent_executor
+    from src.agents.workflow import get_async_agent
     from src.memory.manager import get_memory_manager
 
     try:
@@ -279,6 +233,9 @@ async def chat_stream(request: ChatRequest):
                 "model": "deepseek" if DEEPSEEK_API_KEY else "ollama",
             }
         }
+
+        # 获取异步 Agent 实例
+        agent_executor = await get_async_agent()
 
         async def stream_generator():
             async for event in agent_executor.astream_events(
