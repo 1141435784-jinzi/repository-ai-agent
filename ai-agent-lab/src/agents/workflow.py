@@ -207,7 +207,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
             last_message = state["messages"][-1]
             user_query = last_message.content if hasattr(last_message, "content") else ""
         
-        llm = get_llm(provider="deepseek", streaming=False)
+        llm = get_llm(provider="deepseek", streaming=True)
         workflow_logger.llm_call(thread_id, "supervisor", model=llm.model_name if hasattr(llm, 'model_name') else None)
         
         prompt = SUPERVISOR_PROMPT.invoke({"messages": [HumanMessage(content=user_query)]})
@@ -257,7 +257,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         return {"route": "agent_tech", "current_agent": "agent_tech"}
 
 
-def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
+async def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     """Agent技术知识库检索节点"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("agent_tech_rag", thread_id)
@@ -273,7 +273,7 @@ def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.rag_query(thread_id, question, "agent_knowledge")
         
         agent = agent_manager.get_agent("agent_tech")
-        res = agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
+        res = await agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
         
         workflow_logger.rag_result(thread_id, "agent_knowledge", res["sources"], len(res["answer_context"]))
         
@@ -284,7 +284,7 @@ def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         return {"rag_context": "", "rag_sources": []}
 
 
-def plan_rag_node(state: AgentState, config: RunnableConfig) -> dict:
+async def plan_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     """规划知识库检索节点 - 整合旅行规划与财务预算"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("plan_rag", thread_id)
@@ -299,7 +299,7 @@ def plan_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         workflow_logger.rag_query(thread_id, question, "plan_knowledge")
         
         agent = agent_manager.get_agent("plan")
-        res = agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
+        res = await agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
         
         workflow_logger.rag_result(thread_id, "plan_rag", res["sources"], len(res["answer_context"]))
         workflow_logger.node_exit("plan_rag", thread_id, f"检索到 {len(res['sources'])} 个来源")
@@ -457,7 +457,7 @@ async def food_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         query = last_message.content if hasattr(last_message, "content") else ""
     
     agent = agent_manager.get_agent("food")
-    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    res = await agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
     
     rag_context = res.get("answer_context", "")
     rag_sources = res.get("sources", [])
@@ -498,7 +498,7 @@ async def sights_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         query = last_message.content if hasattr(last_message, "content") else ""
     
     agent = agent_manager.get_agent("sights")
-    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    res = await agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
     
     rag_context = res.get("answer_context", "")
     rag_sources = res.get("sources", [])
@@ -539,7 +539,7 @@ async def transport_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         query = last_message.content if hasattr(last_message, "content") else ""
     
     agent = agent_manager.get_agent("transport")
-    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    res = await agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
     
     rag_context = res.get("answer_context", "")
     rag_sources = res.get("sources", [])
@@ -591,7 +591,7 @@ async def task_decomposition_node(state: AgentState, config: RunnableConfig) -> 
         ]
         
         if sum(complexity_indicators) >= 2 or len(found_intents) >= 3:
-            llm = get_llm(provider="deepseek", streaming=False)
+            llm = get_llm(provider="deepseek", streaming=True)
             
             decomposition_prompt = f"""
             请将以下用户请求分解为多个逻辑独立的子任务，并为每个子任务指定最合适的专家。
@@ -869,7 +869,7 @@ async def self_healing_node(state: AgentState, config: RunnableConfig) -> dict:
         last_msgs = state["messages"][-2:]
         error_info = state.get("tool_error", "未知错误")
         
-        llm = get_llm(provider="deepseek", streaming=False)
+        llm = get_llm(provider="deepseek", streaming=True)
         
         healing_prompt = f"""
         你是一个自愈专家。上一个工具调用失败了。

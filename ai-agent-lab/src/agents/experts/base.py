@@ -63,7 +63,7 @@ class DomainExpertAgent(ABC):
         self._tools = []  # 可用工具列表
         self._rag_engine = None  # RAG引擎
         self._initialized = False
-        self.llm = get_llm()
+        self.llm = get_llm(streaming=True)
     
     async def initialize(self) -> None:
         """初始化Agent（异步）
@@ -132,7 +132,7 @@ class DomainExpertAgent(ABC):
         
         # 调用 LLM（绑定工具）
         user_model = config.get("configurable", {}).get("model", "")
-        active_llm = get_llm(provider=user_model or None)
+        active_llm = get_llm(provider=user_model or None, streaming=True)
         
         # 如果有工具，绑定工具
         if self._tools:
