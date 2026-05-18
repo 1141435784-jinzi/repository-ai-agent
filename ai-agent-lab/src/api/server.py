@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.config import (
@@ -186,6 +187,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 静态文件服务配置
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ============================================================
