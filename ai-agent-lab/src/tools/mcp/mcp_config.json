@@ -6,7 +6,7 @@
       "env": {
         "GIT_REPO_PATH": "."
       },
-      "disabled": true,
+      "disabled": false,
       "autoApprove": [
         "git_status",
         "git_log",

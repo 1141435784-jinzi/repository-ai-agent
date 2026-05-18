@@ -16,8 +16,11 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+
+from src.llm.gateway import get_llm
 
 
 class DomainExpertAgent(ABC):
@@ -35,7 +38,9 @@ class DomainExpertAgent(ABC):
                  description: str,
                  capabilities: List[str],
                  knowledge_dir: str,
-                 collection_name: str):
+                 collection_name: str,
+                 prompt_template: Optional[Any] = None,
+                 domain_metadata: Optional[Dict[str, Any]] = None):
         """初始化领域专家Agent
         
         Args:
@@ -44,33 +49,50 @@ class DomainExpertAgent(ABC):
             capabilities: Agent能力列表
             knowledge_dir: 知识库目录
             collection_name: ChromaDB集合名称
+            prompt_template: Prompt 模板（可选，用于默认 process 逻辑）
+            domain_metadata: 领域特定元数据（可选）
         """
         self.name = name
         self.description = description
         self.capabilities = capabilities
         self.knowledge_dir = knowledge_dir
         self.collection_name = collection_name
+        self.prompt_template = prompt_template
+        self.domain_metadata = domain_metadata or {}
+        
         self._tools = []  # 可用工具列表
         self._rag_engine = None  # RAG引擎
         self._initialized = False
+        self.llm = get_llm()
     
-    @abstractmethod
     async def initialize(self) -> None:
         """初始化Agent（异步）
         
-        子类必须实现此方法，用于初始化：
-        - RAG引擎（从知识库目录）
-        - 工具系统（可选）
-        - 其他依赖资源
+        默认实现：初始化 RAG 引擎
         """
-        pass
+        if self._initialized:
+            return
+        
+        print(f"🔄 正在初始化 {self.name}...")
+        
+        # 延迟导入以避免循环依赖
+        from src.rag.engine import RAGEngine
+        self._rag_engine = RAGEngine(
+            knowledge_dir=self.knowledge_dir,
+            collection_name=self.collection_name
+        )
+        print(f"📚 {self.name} RAG引擎初始化完成")
+        
+        self._initialized = True
+        print(f"✅ {self.name} 初始化完成")
     
-    @abstractmethod
     async def process(self, 
                      query: str, 
                      config: RunnableConfig,
                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """处理用户查询（异步）
+        
+        默认实现：RAG 检索 -> Prompt 构建 -> LLM 调用
         
         Args:
             query: 用户查询文本
@@ -78,15 +100,63 @@ class DomainExpertAgent(ABC):
             context: 上下文信息（可选）
             
         Returns:
-            Dict[str, Any]: 处理结果，必须包含以下字段：
-                - response: Agent回复内容
-                - agent_type: Agent类型标识
-                - needs_tool_execution: 是否需要工具执行
-                - tool_calls: 工具调用列表（如果需要）
-                - sources: 数据来源（如果使用RAG）
-                - metadata: 其他元数据
+            Dict[str, Any]: 处理结果
         """
-        pass
+        if not self.prompt_template:
+            raise NotImplementedError(f"Agent {self.name} 未提供 prompt_template，且未重写 process 方法")
+
+        print(f"🤖 {self.description}处理中: '{query[:30]}...'")
+        
+        # RAG 检索
+        print(f"🔍 {self.name} 知识 RAG: 正在检索 '{query[:30]}...'")
+        rag_result = await self.query_rag(query)
+        
+        # 构建提示
+        prompt_messages = self.prompt_template.invoke(
+            {"messages": [HumanMessage(content=query)]}
+        )
+        
+        # 注入 RAG 检索结果
+        if rag_result["found"]:
+            sources_str = "、".join(rag_result["sources"])
+            rag_system_msg = SystemMessage(content=(
+                f"以下是从知识库中检索到的参考资料，请基于这些资料回答用户问题。\n"
+                f"📖 数据来源: {sources_str}\n\n"
+                f"{rag_result['answer_context']}\n\n"
+                f"---\n"
+                f"请基于以上知识库内容回答，并在回答末尾标注：'📖 数据来源: {sources_str}'\n"
+                f"如果参考资料中没有相关内容，请用你自身的知识回答，"
+                f"并在开头注明：'⚠️ 以下回答基于 AI 通用知识，非知识库内容'"
+            ))
+            prompt_messages.messages.insert(-1, rag_system_msg)
+        
+        # 调用 LLM（绑定工具）
+        user_model = config.get("configurable", {}).get("model", "")
+        active_llm = get_llm(provider=user_model or None)
+        
+        # 如果有工具，绑定工具
+        if self._tools:
+            active_llm = active_llm.bind_tools(self._tools)
+        
+        response = active_llm.invoke(prompt_messages)
+        
+        # 检查是否需要工具调用
+        tool_calls = []
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            tool_calls = response.tool_calls
+        
+        return {
+            "response": response.content,
+            "agent_type": self.name,
+            "needs_tool_execution": len(tool_calls) > 0,
+            "tool_calls": tool_calls,
+            "sources": rag_result.get("sources", []),
+            "found_in_kb": rag_result["found"],
+            "metadata": {
+                "expertise_level": "expert",
+                **self.domain_metadata
+            }
+        }
     
     def register_tools(self, tools: List[BaseTool]) -> None:
         """注册工具
@@ -187,9 +257,17 @@ class DomainExpertAgent(ABC):
             "collection_name": self.collection_name,
             "tool_count": len(self._tools),
             "initialized": self._initialized,
-            "supports_tools": True,  # 所有领域专家都支持工具
-            "supports_rag": True     # 所有领域专家都有知识库
+            "supports_tools": True,
+            "supports_rag": True
         }
+    
+    def get_rag_engine(self):
+        """获取Agent的RAG引擎
+        
+        Returns:
+            RAGEngine: 该Agent的RAG引擎实例，用于增量更新
+        """
+        return self._rag_engine
     
     def get_available_tools(self) -> List[Dict[str, Any]]:
         """获取可用工具列表

@@ -93,10 +93,19 @@ MAX_ITERATIONS: int = 50
 KNOWLEDGE_BASE_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_agent")
 KNOWLEDGE_BASE_SIGHTS_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_sights")
 KNOWLEDGE_BASE_TRANSPORT_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_transport")
-KNOWLEDGE_BASE_FINANCE_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_finance")
+KNOWLEDGE_BASE_PLAN_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_plan")
 KNOWLEDGE_BASE_FOOD_DIR: str = os.path.join(PROJECT_ROOT, "knowledge_base", "knowledge_base_food")
 CHROMA_DB_DIR: str = os.path.join(PROJECT_ROOT, "chroma_db")
 CHROMA_COLLECTION_NAME: str = "agent_knowledge"
+
+# 知识库配置字典（统一管理，便于扩展）
+KNOWLEDGE_BASES: dict[str, str] = {
+    "agent_tech": KNOWLEDGE_BASE_DIR,
+    "plan": KNOWLEDGE_BASE_PLAN_DIR,
+    "sights": KNOWLEDGE_BASE_SIGHTS_DIR,
+    "food": KNOWLEDGE_BASE_FOOD_DIR,
+    "transport": KNOWLEDGE_BASE_TRANSPORT_DIR,
+}
 
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5")
 

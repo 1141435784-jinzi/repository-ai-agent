@@ -48,13 +48,20 @@ from src.config import (
     KNOWLEDGE_BASE_DIR,
     KNOWLEDGE_BASE_SIGHTS_DIR,
     KNOWLEDGE_BASE_TRANSPORT_DIR,
-    KNOWLEDGE_BASE_FINANCE_DIR,
+    KNOWLEDGE_BASE_PLAN_DIR,
     KNOWLEDGE_BASE_FOOD_DIR,
 )
 from src.memory import get_async_checkpointer, get_memory_manager
 from src.llm.gateway import get_llm
-from src.prompts import AGENT_PROMPT, SUPERVISOR_PROMPT, TRAVEL_TECH_PROMPT, SIGHTS_PROMPT, FOOD_PROMPT, TRANSPORT_PROMPT, FINANCE_PROMPT
+from src.prompts import (
+    AGENT_PROMPT, SUPERVISOR_PROMPT, PLAN_PROMPT, 
+    SIGHTS_PROMPT, FOOD_PROMPT, TRANSPORT_PROMPT
+)
 from src.rag.engine import RAGEngine
+from src.agents.experts import (
+    agent_manager, get_agent_tech_expert, get_plan_expert,
+    get_sights_expert, get_food_expert, get_transport_expert
+)
 from src.tools.tool_manager import tool_manager
 from src.utils.logger import WorkflowLogger
 
@@ -142,42 +149,24 @@ class AgentState(TypedDict):
 
 
 # ============================================================
-# 第二步：初始化 RAG 引擎
+# 第二步：初始化领域专家（含 RAG 引擎）
 # ============================================================
-print("📚 正在初始化 Agent 技术知识库...")
-agent_tech_rag = RAGEngine(
-    knowledge_dir=KNOWLEDGE_BASE_DIR,
-    collection_name="agent_knowledge",
-)
-print("📚 Agent 技术知识库初始化完成 ✅")
+async def initialize_experts():
+    """统一初始化所有领域专家"""
+    print("🔄 正在初始化领域专家系统...")
+    # 触发单例创建并注册到 manager
+    get_agent_tech_expert()
+    get_plan_expert()
+    get_sights_expert()
+    get_food_expert()
+    get_transport_expert()
+    
+    # 统一异步初始化（RAG 引擎等）
+    await agent_manager.initialize_all()
+    print("✅ 领域专家系统初始化完成")
 
-print("🏛️ 正在初始化城市景点知识库...")
-sights_rag = RAGEngine(
-    knowledge_dir=KNOWLEDGE_BASE_SIGHTS_DIR,
-    collection_name="sights_knowledge",
-)
-print("🏛️ 城市景点知识库初始化完成 ✅")
-
-print("🚄 正在初始化交通知识库...")
-transport_rag = RAGEngine(
-    knowledge_dir=KNOWLEDGE_BASE_TRANSPORT_DIR,
-    collection_name="transport_knowledge",
-)
-print("🚄 交通知识库初始化完成 ✅")
-
-print("💰 正在初始化财务知识库...")
-finance_rag = RAGEngine(
-    knowledge_dir=KNOWLEDGE_BASE_FINANCE_DIR,
-    collection_name="finance_knowledge",
-)
-print("💰 财务知识库初始化完成 ✅")
-
-print("🍜 正在初始化美食知识库...")
-food_rag = RAGEngine(
-    knowledge_dir=KNOWLEDGE_BASE_FOOD_DIR,
-    collection_name="food_knowledge",
-)
-print("🍜 美食知识库初始化完成 ✅")
+# 在模块加载时，如果不在异步环境，可以由外部调用 initialize_experts
+# 或者在 graph 运行前确保已初始化
 
 
 # ============================================================
@@ -209,8 +198,14 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("supervisor", thread_id)
     
     try:
-        last_message = state["messages"][-1]
-        user_query = last_message.content if hasattr(last_message, "content") else ""
+        # 获取当前任务内容
+        plan = state.get("execution_plan", [])
+        current_task_item = next((t for t in plan if t["agent"] == "supervisor" and t["status"] == "pending"), None)
+        user_query = current_task_item["task"] if current_task_item else ""
+        
+        if not user_query:
+            last_message = state["messages"][-1]
+            user_query = last_message.content if hasattr(last_message, "content") else ""
         
         llm = get_llm(provider="deepseek", streaming=False)
         workflow_logger.llm_call(thread_id, "supervisor", model=llm.model_name if hasattr(llm, 'model_name') else None)
@@ -219,24 +214,43 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         resp = await llm.ainvoke(prompt)
         
         # 解析路由决策
-        route_decision = resp.content.strip().lower()
-        if "sights" in route_decision or "景点" in route_decision or "景区" in route_decision or "旅游景点" in route_decision:
-            route = "sights"
-        elif "transport" in route_decision or "交通" in route_decision or "航班" in route_decision or "高铁" in route_decision or "地铁" in route_decision:
-            route = "transport"
-        elif "finance" in route_decision or "财务" in route_decision or "预算" in route_decision or "费用" in route_decision or "花费" in route_decision:
-            route = "finance"
-        elif "food" in route_decision or "美食" in route_decision or "餐厅" in route_decision or "推荐菜" in route_decision:
-            route = "food"
-        elif "travel" in route_decision or "旅游" in route_decision:
-            route = "sights"  # 默认旅游问题路由到景点专家
-        else:
-            route = "agent_tech"
+        route = resp.content.strip().lower()
+        
+        # 验证路由结果是否在可用专家列表中
+        available_experts = ["agent_tech", "plan", "sights", "transport", "food"]
+        if route not in available_experts:
+            # 尝试从文本中提取关键字
+            for expert in available_experts:
+                if expert in route:
+                    route = expert
+                    break
+            else:
+                # 兼容旧名称路由
+                if "travel" in route or "finance" in route:
+                    route = "plan"
+                else:
+                    route = "agent_tech" # 兜底路由
         
         workflow_logger.logger.info(f"🔀 [{thread_id[:8]}] 路由决策: {route}")
-        workflow_logger.node_exit("supervisor", thread_id, route)
         
-        return {"route": route, "current_agent": route}
+        # 更新执行计划：将当前 supervisor 任务标记为已完成，并插入真正的专家任务
+        new_plan = []
+        for t in plan:
+            if t["agent"] == "supervisor" and t["status"] == "pending":
+                # 标记当前 supervisor 任务完成
+                new_plan.append({**t, "status": "completed"})
+                # 插入新的专家任务
+                new_plan.append({
+                    "id": len(plan) + 1,
+                    "task": user_query,
+                    "agent": route,
+                    "status": "pending"
+                })
+            else:
+                new_plan.append(t)
+        
+        workflow_logger.node_exit("supervisor", thread_id, route)
+        return {"route": route, "current_agent": route, "execution_plan": new_plan}
         
     except Exception as e:
         workflow_logger.error(thread_id, "supervisor", e)
@@ -249,12 +263,18 @@ def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("agent_tech_rag", thread_id)
     
     try:
-        last_message = state["messages"][-1]
-        question = last_message.content if hasattr(last_message, "content") else ""
+        # 从执行计划中获取当前子任务作为查询词
+        plan = state.get("execution_plan", [])
+        question = next((t["task"] for t in plan if t["status"] == "pending"), "")
+        if not question:
+            last_message = state["messages"][-1]
+            question = last_message.content if hasattr(last_message, "content") else ""
         
         workflow_logger.rag_query(thread_id, question, "agent_knowledge")
         
-        res = agent_tech_rag.query(question)
+        agent = agent_manager.get_agent("agent_tech")
+        res = agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
+        
         workflow_logger.rag_result(thread_id, "agent_knowledge", res["sources"], len(res["answer_context"]))
         
         workflow_logger.node_exit("agent_tech_rag", thread_id, f"检索到 {len(res['sources'])} 个来源")
@@ -264,33 +284,28 @@ def agent_tech_rag_node(state: AgentState, config: RunnableConfig) -> dict:
         return {"rag_context": "", "rag_sources": []}
 
 
-def travel_rag_node(state: AgentState, config: RunnableConfig) -> dict:
-    """旅游知识库检索节点 - 同时检索景点和交通知识库"""
+def plan_rag_node(state: AgentState, config: RunnableConfig) -> dict:
+    """规划知识库检索节点 - 整合旅行规划与财务预算"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("travel_rag", thread_id)
+    workflow_logger.node_enter("plan_rag", thread_id)
     
     try:
-        last_message = state["messages"][-1]
-        question = last_message.content if hasattr(last_message, "content") else ""
+        plan = state.get("execution_plan", [])
+        question = next((t["task"] for t in plan if t["status"] == "pending"), "")
+        if not question:
+            last_message = state["messages"][-1]
+            question = last_message.content if hasattr(last_message, "content") else ""
         
-        # 检索景点知识库
-        workflow_logger.rag_query(thread_id, question, "sights_rag")
-        sights_res = sights_rag.query(question)
+        workflow_logger.rag_query(thread_id, question, "plan_knowledge")
         
-        # 检索交通知识库
-        workflow_logger.rag_query(thread_id, question, "transport_rag")
-        transport_res = transport_rag.query(question)
+        agent = agent_manager.get_agent("plan")
+        res = agent.query_rag(question) if agent else {"found": False, "answer_context": "", "sources": []}
         
-        # 合并检索结果
-        rag_context = sights_res["answer_context"] + "\n\n" + transport_res["answer_context"]
-        rag_sources = sights_res["sources"] + transport_res["sources"]
-        
-        workflow_logger.rag_result(thread_id, "travel_rag", rag_sources, len(rag_context))
-        
-        workflow_logger.node_exit("travel_rag", thread_id, f"检索到 {len(rag_sources)} 个来源")
-        return {"rag_context": rag_context, "rag_sources": rag_sources}
+        workflow_logger.rag_result(thread_id, "plan_rag", res["sources"], len(res["answer_context"]))
+        workflow_logger.node_exit("plan_rag", thread_id, f"检索到 {len(res['sources'])} 个来源")
+        return {"rag_context": res["answer_context"], "rag_sources": res["sources"]}
     except Exception as e:
-        workflow_logger.error(thread_id, "travel_rag", e)
+        workflow_logger.error(thread_id, "plan_rag", e)
         return {"rag_context": "", "rag_sources": []}
 
 
@@ -310,32 +325,17 @@ def _build_prompt_with_context(state: AgentState, prompt_template, messages: lis
     rag_ctx = state.get("rag_context")
     sources = state.get("rag_sources", [])
     if rag_ctx:
-        src_str = "、".join(sources)
+        src_str = "、".join(list(set(sources))) # 去重
         rag_msg = SystemMessage(
-            content=f"参考资料（来源：{src_str}）：\n{rag_ctx}\n\n"
-            "如无相关资料请直接回答，不要编造。"
+            content=f"【知识库参考资料】(来源: {src_str})\n{rag_ctx}\n\n"
+            "【重要指令】:\n"
+            f"1. 如果你的回答采用了上述参考资料中的任何信息（如景点名称、美食特色等），请务必在回答末尾精确标注：`（数据来源：{src_str}）`。\n"
+            "2. 即使你认为这是常识，只要参考资料中提供了，也请标注来源。\n"
+            "3. 如果参考资料完全无关，请在末尾标注：`（以上内容基于 AI 通用知识）`。"
         )
         
-        # 寻找安全的插入位置，避免破坏 AIMessage(tool_calls) -> ToolMessage 的连续性
-        # 策略：从后往前找，如果最后是 ToolMessage，则必须跳过它及其前面的 AIMessage
-        insert_idx = len(prompt_messages.messages)
-        while insert_idx > 0:
-            current_msg = prompt_messages.messages[insert_idx - 1]
-            if isinstance(current_msg, ToolMessage):
-                # 如果是 ToolMessage，必须继续往前找对应的 AIMessage
-                insert_idx -= 1
-                continue
-            if isinstance(current_msg, AIMessage) and hasattr(current_msg, 'tool_calls') and current_msg.tool_calls:
-                # 找到了触发工具调用的 AIMessage，RAG 必须在它之前
-                insert_idx -= 1
-                continue
-            # 找到非工具相关的消息，可以在此处之后插入
-            break
-        
-        # 确保不插入在消息列表的最末尾（除非列表为空），通常插在倒数第二个位置比较好，
-        # 但如果是为了补充背景知识，插在靠前的位置（如系统消息后）最稳妥。
-        # 这里选择插在搜索到的安全位置
-        prompt_messages.messages.insert(insert_idx, rag_msg)
+        # 始终插在系统消息（索引 0）之后，确保最高优先级
+        prompt_messages.messages.insert(1, rag_msg)
 
     return prompt_messages.messages
 
@@ -354,8 +354,20 @@ async def _build_agent_response(
     try:
         cleaned_msgs = state["messages"]
 
+        # 获取当前任务指令（从执行计划中提取）
+        plan = state.get("execution_plan", [])
+        current_task = next((t["task"] for t in plan if t["status"] == "pending"), "处理用户请求")
+        
         # 构建提示
         prompt_msgs = _build_prompt_with_context(state, prompt_template, cleaned_msgs)
+        
+        # 注入当前任务指令，引导 Agent 专注
+        task_msg = SystemMessage(
+            content=f"【当前子任务指令】：{current_task}\n"
+            "请仅针对此子任务进行回答或执行工具调用。不要重复回答其他专家已经处理过的内容。"
+        )
+        # 插在 SystemMessage 之后
+        prompt_msgs.insert(1, task_msg)
 
         # 获取工具列表
         tools = await tool_manager.get_tools()
@@ -415,48 +427,21 @@ async def agent_tech_node(state: AgentState, config: RunnableConfig) -> dict:
     return {**result, "current_agent": "agent_tech", "execution_plan": new_plan}
 
 
-async def travel_node(state: AgentState, config: RunnableConfig) -> dict:
-    """旅游规划专家节点"""
+async def plan_node(state: AgentState, config: RunnableConfig) -> dict:
+    """规划专家节点 - 整合旅行规划与财务预算"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("travel", thread_id)
-    result = await _build_agent_response(state, config, TRAVEL_TECH_PROMPT)
-    workflow_logger.node_exit("travel", thread_id, "响应生成完成")
-    return {**result, "current_agent": "travel"}
-
-
-async def finance_rag_node(state: AgentState, config: RunnableConfig) -> dict:
-    """财务知识检索节点"""
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("finance_rag", thread_id)
+    workflow_logger.node_enter("plan", thread_id)
     
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, "content") else ""
-    
-    result = finance_rag.query(query)
-    rag_context = result.get("answer_context", "")
-    rag_sources = result.get("sources", [])
-    
-    workflow_logger.logger.info(f"📚 [{thread_id[:8]}] [finance_rag] RAG完成 | 来源: {rag_sources} | 上下文长度: {len(rag_context)}")
-    workflow_logger.node_exit("finance_rag", thread_id, f"检索到 {len(rag_sources)} 个来源")
-    
-    return {
-        "rag_context": rag_context,
-        "rag_sources": rag_sources,
-        "current_agent": "finance"
-    }
-
-
-async def finance_agent_node(state: AgentState, config: RunnableConfig) -> dict:
-    """财务规划专家节点"""
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    workflow_logger.node_enter("finance_agent", thread_id)
-    
+    # 更新执行清单状态
     plan = state.get("execution_plan", [])
-    new_plan = [{**t, "status": "completed" if t["agent"] == "finance" and t["status"] == "pending" else t["status"]} for t in plan]
+    new_plan = [
+        {**t, "status": "completed" if t["agent"] == "plan" and t["status"] == "pending" else t["status"]}
+        for t in plan
+    ]
     
-    result = await _build_agent_response(state, config, FINANCE_PROMPT)
-    workflow_logger.node_exit("finance_agent", thread_id, "响应生成完成")
-    return {**result, "current_agent": "finance", "execution_plan": new_plan}
+    result = await _build_agent_response(state, config, PLAN_PROMPT)
+    workflow_logger.node_exit("plan", thread_id, "响应生成完成")
+    return {**result, "current_agent": "plan", "execution_plan": new_plan}
 
 
 async def food_rag_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -464,12 +449,18 @@ async def food_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("food_rag", thread_id)
     
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, "content") else ""
+    # 查找分配给 food agent 的第一个 pending 任务
+    plan = state.get("execution_plan", [])
+    query = next((t["task"] for t in plan if t["agent"] == "food" and t["status"] == "pending"), "")
+    if not query:
+        last_message = state["messages"][-1]
+        query = last_message.content if hasattr(last_message, "content") else ""
     
-    result = food_rag.query(query)
-    rag_context = result.get("answer_context", "")
-    rag_sources = result.get("sources", [])
+    agent = agent_manager.get_agent("food")
+    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    
+    rag_context = res.get("answer_context", "")
+    rag_sources = res.get("sources", [])
     
     workflow_logger.logger.info(f"📚 [{thread_id[:8]}] [food_rag] RAG完成 | 来源: {rag_sources} | 上下文长度: {len(rag_context)}")
     workflow_logger.node_exit("food_rag", thread_id, f"检索到 {len(rag_sources)} 个来源")
@@ -499,12 +490,18 @@ async def sights_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("sights_rag", thread_id)
     
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, "content") else ""
+    # 查找分配给 sights agent 的第一个 pending 任务
+    plan = state.get("execution_plan", [])
+    query = next((t["task"] for t in plan if t["agent"] == "sights" and t["status"] == "pending"), "")
+    if not query:
+        last_message = state["messages"][-1]
+        query = last_message.content if hasattr(last_message, "content") else ""
     
-    result = sights_rag.query(query)
-    rag_context = result.get("answer_context", "")
-    rag_sources = result.get("sources", [])
+    agent = agent_manager.get_agent("sights")
+    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    
+    rag_context = res.get("answer_context", "")
+    rag_sources = res.get("sources", [])
     
     workflow_logger.logger.info(f"📚 [{thread_id[:8]}] [sights_rag] RAG完成 | 来源: {rag_sources} | 上下文长度: {len(rag_context)}")
     workflow_logger.node_exit("sights_rag", thread_id, f"检索到 {len(rag_sources)} 个来源")
@@ -534,12 +531,18 @@ async def transport_rag_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("transport_rag", thread_id)
     
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, "content") else ""
+    # 查找分配给 transport agent 的第一个 pending 任务
+    plan = state.get("execution_plan", [])
+    query = next((t["task"] for t in plan if t["agent"] == "transport" and t["status"] == "pending"), "")
+    if not query:
+        last_message = state["messages"][-1]
+        query = last_message.content if hasattr(last_message, "content") else ""
     
-    result = transport_rag.query(query)
-    rag_context = result.get("answer_context", "")
-    rag_sources = result.get("sources", [])
+    agent = agent_manager.get_agent("transport")
+    res = agent.query_rag(query) if agent else {"found": False, "answer_context": "", "sources": []}
+    
+    rag_context = res.get("answer_context", "")
+    rag_sources = res.get("sources", [])
     
     workflow_logger.logger.info(f"📚 [{thread_id[:8]}] [transport_rag] RAG完成 | 来源: {rag_sources} | 上下文长度: {len(rag_context)}")
     workflow_logger.node_exit("transport_rag", thread_id, f"检索到 {len(rag_sources)} 个来源")
@@ -577,14 +580,17 @@ async def task_decomposition_node(state: AgentState, config: RunnableConfig) -> 
         user_query = last_message.content if hasattr(last_message, "content") else ""
         
         # 分析任务复杂度
+        intent_keywords = ["天气", "景点", "美食", "餐厅", "预算", "花费", "交通", "酒店", "机票", "门票"]
+        found_intents = [kw for kw in intent_keywords if kw in user_query]
+        
         complexity_indicators = [
-            "和" in user_query and "并且" in user_query,
-            len(user_query) > 100,
-            "规划" in user_query or "安排" in user_query,
-            "先" in user_query and "再" in user_query,
+            len(found_intents) >= 2, # 包含两个以上领域关键词
+            len(user_query) > 60,    # 长度超过60字
+            "规划" in user_query or "安排" in user_query or "推荐" in user_query,
+            "、" in user_query or "，" in user_query and len(user_query) > 30,
         ]
         
-        if sum(complexity_indicators) >= 2:
+        if sum(complexity_indicators) >= 2 or len(found_intents) >= 3:
             llm = get_llm(provider="deepseek", streaming=False)
             
             decomposition_prompt = f"""
@@ -593,18 +599,18 @@ async def task_decomposition_node(state: AgentState, config: RunnableConfig) -> 
             用户请求：{user_query}
             
             可选专家列表：
-            - sights: 景点、景区、旅游规划
-            - transport: 交通、出行、订票
-            - finance: 财务、预算、花费
-            - food: 美食、餐厅推荐
-            - agent_tech: 其他通用技术或综合性问题
+            - plan: 旅行目的地推荐、大行程规划、签证政策、费用精算、汇率换算、保险建议、开支优化
+            - sights: 具体景点解说、门票政策、开放时间、景区内路径规划
+            - transport: 航班/车次查询、交通方案对比、换乘指引、接驳指南
+            - food: 菜品推荐、餐厅点评、预订建议、美食街区探店
+            - agent_tech: AI技术问题、数学计算、时间/天气查询等通用任务
             
             请输出JSON格式，包含以下字段：
             - "is_complex": true
             - "execution_plan": 子任务清单，每个任务包含:
                 - "id": 任务编号 (1, 2, 3...)
                 - "task": 任务简述
-                - "agent": 推荐专家名称 (sights/transport/finance/food/agent_tech)
+                - "agent": 推荐专家名称 (plan/sights/transport/food/agent_tech)
                 - "status": "pending"
             - "reason": 分解逻辑说明
             
@@ -639,11 +645,11 @@ async def task_decomposition_node(state: AgentState, config: RunnableConfig) -> 
             except Exception as e:
                 workflow_logger.logger.error(f"❌ 任务分解解析失败: {e}")
         
-        # 简单任务，直接指向技术专家（或通过路由）
-        workflow_logger.node_exit("task_decomposition", thread_id, "简单任务，生成默认计划")
+        # 简单任务，路由到 supervisor 进行意图识别
+        workflow_logger.node_exit("task_decomposition", thread_id, "简单任务，生成路由计划")
         return {
             "task_decomposition": {"is_complex": False},
-            "execution_plan": [{"id": 1, "task": user_query, "agent": "agent_tech", "status": "pending"}]
+            "execution_plan": [{"id": 1, "task": user_query, "agent": "supervisor", "status": "pending"}]
         }
         
     except Exception as e:
@@ -673,10 +679,10 @@ def collaboration_decision_node(state: AgentState, config: RunnableConfig) -> di
         
         # 检查是否提到其他领域
         collaboration_triggers = {
-            "sights": ["景点", "景区", "旅游", "风景"],
-            "transport": ["交通", "高铁", "航班", "地铁", "公交"],
-            "finance": ["预算", "费用", "价格", "财务"],
-            "food": ["美食", "餐厅", "吃饭", "推荐菜"],
+            "plan": ["规划", "计划", "安排", "旅游", "旅行", "预算", "费用", "价格", "财务", "花销", "汇率"],
+            "sights": ["景点", "景区", "风景", "观光"],
+            "transport": ["交通", "高铁", "航班", "地铁", "公交", "机票", "车票"],
+            "food": ["美食", "餐厅", "吃饭", "推荐菜", "特产"],
         }
         
         current_agent = state.get("current_agent", "")
@@ -912,20 +918,43 @@ def should_continue(state: AgentState) -> Literal["tool_selector", "summary"]:
 # 总结节点
 # ------------------------------
 async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
-    """最终总结节点 - 生成最终回复"""
+    """最终总结节点 - 生成最终回复，并确保合并所有子任务的来源信息"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     workflow_logger.node_enter("summary", thread_id)
     
     try:
         messages = state["messages"]
+        plan = state.get("execution_plan", [])
+        
+        # 如果是复杂分解任务，且任务已完成
+        if plan and len(plan) > 1:
+            # 找到所有非工具调用的 AI 消息
+            ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.content and not m.tool_calls]
+            
+            # 过滤掉一些简短的过渡消息（如“我先查一下...”、“好的，我为您规划...”）
+            meaningful_msgs = []
+            seen_content = set()
+            for m in ai_messages:
+                content = m.content.strip()
+                if len(content) > 30 and content not in seen_content:
+                    meaningful_msgs.append(m)
+                    seen_content.add(content)
+            
+            if len(meaningful_msgs) > 1:
+                # 拼接所有有意义的回复
+                combined_content = "\n\n".join([m.content for m in meaningful_msgs])
+                workflow_logger.node_exit("summary", thread_id, f"合并了 {len(meaningful_msgs)} 条子任务回复")
+                return {"messages": [AIMessage(content=combined_content)]}
+
+        # 寻找最后一条有意义的 AI 回复
         last_meaningful_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage) and m.content and not m.tool_calls), None)
         
         if last_meaningful_msg:
-            workflow_logger.node_exit("summary", thread_id, "使用现有回复")
+            workflow_logger.node_exit("summary", thread_id, "使用单条有意义回复")
             return {"messages": [last_meaningful_msg]}
         
         summary_msg = AIMessage(content="感谢您的提问！如有其他问题，请随时告诉我。")
-        workflow_logger.node_exit("summary", thread_id, "生成总结")
+        workflow_logger.node_exit("summary", thread_id, "生成默认总结")
         return {"messages": [summary_msg]}
         
     except Exception as e:
@@ -949,9 +978,9 @@ def execution_list_router(state: AgentState) -> str:
     
     # 映射专家名称到 RAG 节点
     agent_map = {
+        "plan": "plan_rag",
         "sights": "sights_rag",
         "transport": "transport_rag",
-        "finance": "finance_rag",
         "food": "food_rag",
         "agent_tech": "agent_tech_rag",
         "supervisor": "supervisor"
@@ -985,9 +1014,9 @@ def collaboration_or_tool_decision(state: AgentState) -> str:
         current_agent = state.get("current_agent") or "agent_tech"
         agent_node_map = {
             "agent_tech": "agent_tech",
+            "plan": "plan",
             "sights": "sights_agent",
             "transport": "transport_agent",
-            "finance": "finance_agent",
             "food": "food_agent"
         }
         return agent_node_map.get(current_agent, "agent_tech")
@@ -1016,12 +1045,12 @@ def _build_graph() -> StateGraph:
     # 专家节点
     g.add_node("agent_tech_rag", agent_tech_rag_node)
     g.add_node("agent_tech", agent_tech_node)
+    g.add_node("plan_rag", plan_rag_node)
+    g.add_node("plan", plan_node)
     g.add_node("sights_rag", sights_rag_node)
     g.add_node("sights_agent", sights_agent_node)
     g.add_node("transport_rag", transport_rag_node)
     g.add_node("transport_agent", transport_agent_node)
-    g.add_node("finance_rag", finance_rag_node)
-    g.add_node("finance_agent", finance_agent_node)
     g.add_node("food_rag", food_rag_node)
     g.add_node("food_agent", food_agent_node)
     
@@ -1042,9 +1071,9 @@ def _build_graph() -> StateGraph:
         "execution_router_node",
         execution_list_router,
         {
+            "plan_rag": "plan_rag",
             "sights_rag": "sights_rag",
             "transport_rag": "transport_rag",
-            "finance_rag": "finance_rag",
             "food_rag": "food_rag",
             "agent_tech_rag": "agent_tech_rag",
             "supervisor": "supervisor",
@@ -1054,13 +1083,13 @@ def _build_graph() -> StateGraph:
     
     # 3. 专家协作
     g.add_edge("agent_tech_rag", "agent_tech")
+    g.add_edge("plan_rag", "plan")
     g.add_edge("sights_rag", "sights_agent")
     g.add_edge("transport_rag", "transport_agent")
-    g.add_edge("finance_rag", "finance_agent")
     g.add_edge("food_rag", "food_agent")
     
     # 所有专家执行完后进入决策
-    for node in ["agent_tech", "sights_agent", "transport_agent", "finance_agent", "food_agent", "supervisor"]:
+    for node in ["agent_tech", "plan", "sights_agent", "transport_agent", "food_agent", "supervisor"]:
         g.add_conditional_edges(
             node,
             collaboration_or_tool_decision,
@@ -1069,9 +1098,9 @@ def _build_graph() -> StateGraph:
                 "self_healing": "self_healing",
                 "execution_router": "execution_router_node",
                 "agent_tech": "agent_tech",
+                "plan": "plan",
                 "sights_agent": "sights_agent",
                 "transport_agent": "transport_agent",
-                "finance_agent": "finance_agent",
                 "food_agent": "food_agent"
             }
         )
@@ -1086,9 +1115,9 @@ def _build_graph() -> StateGraph:
             "tool_selector": "tools", # 理论上 handler 不会直接回 tools，但保留兼容
             "execution_router": "execution_router_node",
             "agent_tech": "agent_tech",
+            "plan": "plan",
             "sights_agent": "sights_agent",
             "transport_agent": "transport_agent",
-            "finance_agent": "finance_agent",
             "food_agent": "food_agent"
         }
     )
@@ -1157,3 +1186,11 @@ def clear_graph_cache(graph_id: str = None):
         if graph_id == "default":
             _async_agent = None
         logger.info(f"🗑️ 状态图缓存已清除: {graph_id}")
+
+
+__all__ = [
+    "AgentState",
+    "get_async_agent",
+    "initialize_experts",
+    "clear_graph_cache",
+]

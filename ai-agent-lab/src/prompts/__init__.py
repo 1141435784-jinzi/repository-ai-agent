@@ -38,11 +38,10 @@ safe_output = sanitize_output(agent_response)
 # 导入各个 Prompt 模块
 from .supervisor import SUPERVISOR_PROMPT
 from .agent_tech import AGENT_PROMPT
-from .agent_travel import TRAVEL_TECH_PROMPT
+from .agent_plan import PLAN_PROMPT
 from .agent_sights import SIGHTS_PROMPT
 from .agent_food import FOOD_PROMPT
 from .agent_transport import TRANSPORT_PROMPT
-from .agent_finance import FINANCE_PROMPT
 from .tool_assistant import TOOL_PROMPT
 from .security import sanitize_input, sanitize_output
 
@@ -50,11 +49,10 @@ from .security import sanitize_input, sanitize_output
 __all__ = [
     "SUPERVISOR_PROMPT",
     "AGENT_PROMPT",
-    "TRAVEL_TECH_PROMPT",
+    "PLAN_PROMPT",
     "SIGHTS_PROMPT",
     "FOOD_PROMPT",
     "TRANSPORT_PROMPT",
-    "FINANCE_PROMPT",
     "TOOL_PROMPT",
     "sanitize_input",
     "sanitize_output",

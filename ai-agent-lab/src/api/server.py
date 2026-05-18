@@ -163,6 +163,10 @@ async def lifespan(app: FastAPI):
     
     logger.info("Agent API 开始启动...")
 
+    # 【生产实践】初始化领域专家系统（含 RAG 引擎预热）
+    from src.agents import initialize_experts
+    await initialize_experts()
+
     # 【生产实践】预热异步 Agent（含 PostgreSQL 连接池初始化）
     # 确保第一个用户请求不需要等待连接池创建
     logger.info("正在预热异步 Agent 及 PostgreSQL 连接池...")
@@ -197,6 +201,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"MCP 管理器初始化失败: {e}")
         logger.warning("MCP 功能可能不可用，但服务将继续运行")
     
+    # 【生产实践】启动知识库文件监听服务
+    # 当知识库文件发生变化时，自动触发增量更新
+    logger.info("正在启动知识库文件监听服务...")
+    try:
+        from src.rag import start_all_file_watchers
+        start_all_file_watchers()
+        logger.info("知识库文件监听服务已启动")
+    except Exception as e:
+        logger.warning(f"文件监听服务启动失败: {e}")
+        logger.warning("文件监听功能不可用，知识库更新需要手动触发")
+    
     logger.info("Agent API 启动成功。")
     logger.info("=" * 60)
     logger.info("服务已就绪，可通过以下地址访问:")
@@ -216,16 +231,25 @@ async def lifespan(app: FastAPI):
     # 【生产实践】优雅关闭 — 释放所有资源
     logger.info("Agent API 正在关闭，释放所有资源...")
     
-    # 1. 关闭 MCP 管理器
+    # 1. 停止知识库文件监听服务
+    try:
+        from src.rag import stop_all_file_watchers
+        logger.info("正在停止知识库文件监听服务...")
+        stop_all_file_watchers()
+        logger.info("知识库文件监听服务已停止")
+    except Exception as e:
+        logger.warning(f"停止文件监听服务失败: {e}")
+    
+    # 2. 关闭 MCP 管理器
     try:
         from src.tools import close_mcp_manager
         logger.info("正在关闭 MCP 管理器...")
         await close_mcp_manager()
-        logger.info("MCP ���理器已关闭")
+        logger.info("MCP 管理器已关闭")
     except Exception as e:
         logger.warning(f"关闭 MCP 管理器失败: {e}")
     
-    # 2. 释放 PostgreSQL 异步连接池
+    # 3. 释放 PostgreSQL 异步连接池
     logger.info("正在释放 PostgreSQL 连接池资源...")
     await close_async_pool()
     logger.info("PostgreSQL 连接池资源已释放")
