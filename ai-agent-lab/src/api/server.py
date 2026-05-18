@@ -109,6 +109,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"MCP 管理器初始化失败: {e}")
         logger.warning("MCP 功能可能不可用，但服务将继续运行")
 
+    # 【生产实践】初始化领域专家系统（加载知识库）
+    # 这会创建所有专家的 RAG 引擎并加载知识库内容到向量数据库
+    logger.info("正在初始化领域专家系统...")
+    try:
+        from src.agents import initialize_experts
+        await initialize_experts()
+        logger.info("✅ 领域专家系统初始化成功")
+    except Exception as e:
+        logger.warning(f"领域专家系统初始化失败: {e}")
+        logger.warning("专家功能可能不可用，但服务将继续运行")
+
     # 【生产实践】启动知识库文件监听服务
     # 当知识库文件发生变化时，自动触发增量更新
     logger.info("正在启动知识库文件监听服务...")
