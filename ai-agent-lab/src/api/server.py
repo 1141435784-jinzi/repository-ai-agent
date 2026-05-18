@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.config import (
@@ -241,6 +242,55 @@ async def chat(request: ChatRequest):
 
     except Exception as e:
         logger.error(f"聊天接口出错: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """流式聊天接口 - 实时返回AI响应"""
+    from src.agents.workflow import agent_executor
+    from src.memory.manager import get_memory_manager
+
+    try:
+        thread_id = request.thread_id
+        if not thread_id:
+            thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        memory_manager = get_memory_manager()
+
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "model": "deepseek" if DEEPSEEK_API_KEY else "ollama",
+            }
+        }
+
+        async def stream_generator():
+            async for event in agent_executor.astream_events(
+                {"messages": [("user", request.message)]},
+                config=config,
+                version="v1"
+            ):
+                # 只处理 token 级别的输出
+                if event["event"] == "on_chat_model_stream":
+                    content = event["data"]["chunk"].content
+                    if content:
+                        yield f"data: {content}\n\n"
+                elif event["event"] == "on_end":
+                    # 流式结束标记
+                    yield "data: [END]\n\n"
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"流式聊天接口出错: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
