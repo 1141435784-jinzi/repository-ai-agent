@@ -80,8 +80,6 @@ class KnowledgeBaseWatcher:
         self._observer.start()
         self._is_running = True
 
-        logger.info(f"✅ 文件监听服务已启动（目录: {self._knowledge_dir}）")
-
     def stop(self) -> None:
         """停止文件监听服务"""
         if not self._is_running:
@@ -221,11 +219,11 @@ def start_all_file_watchers() -> None:
                     )
                     watcher.start()
                     _global_file_watchers.append(watcher)
-                    print(f"✅ 文件监听已启动: {name} ({kb_dir})")
+                    logger.info(f"✅ 文件监听已启动: {name} ({kb_dir})")
                 else:
-                    print(f"⚠️ 知识库目录不存在，跳过监听: {name} ({kb_dir})")
+                    logger.warning(f"⚠️ 知识库目录不存在，跳过监听: {name} ({kb_dir})")
             except Exception as e:
-                print(f"❌ 文件监听启动失败: {name} - {e}")
+                logger.error(f"❌ 文件监听启动失败: {name} - {e}")
 
 
 def _create_update_callback(knowledge_base_name: str):
@@ -248,12 +246,12 @@ def _create_update_callback(knowledge_base_name: str):
             updater = _global_updaters.get(knowledge_base_name)
             if updater:
                 stats = updater.update_changed_file(file_path, change_type)
-                print(
+                logger.info(
                     f"📚 [{knowledge_base_name}] {change_type}: {file_path} → 新增={stats['added']} | 删除={stats['deleted']}"
                 )
                 return stats
         except Exception as e:
-            print(f"❌ [{knowledge_base_name}] 增量更新失败: {e}")
+            logger.error(f"❌ [{knowledge_base_name}] 增量更新失败: {e}")
         return None
 
     return update_callback
@@ -271,9 +269,9 @@ def stop_all_file_watchers() -> None:
     for watcher in _global_file_watchers:
         try:
             watcher.stop()
-            print(f"✅ 文件监听已停止")
+            logger.info(f"✅ 文件监听已停止")
         except Exception as e:
-            print(f"❌ 停止文件监听失败: {e}")
+            logger.error(f"❌ 停止文件监听失败: {e}")
 
     _global_file_watchers.clear()
 
