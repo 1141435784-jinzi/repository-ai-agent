@@ -1,132 +1,72 @@
 """
-=== FastAPI 接口层 — 将 Agent 封装为 HTTP 服务 ===
+=== FastAPI 服务入口 ===
 
-【知识点】为什么要用 FastAPI 封装 Agent？
-在企业级场景中，Agent 不是一个命令行程序，而是一个后端服务：
-- 前端（Web/App/小程序）通过 HTTP 请求与 Agent 交互
-- 多个客户端可以同时访问，每个客户端有独立的会话（thread_id）
-- 支持水平扩展：多个 API 实例 + 共享存储 = 高并发
+【知识点】FastAPI 服务架构：
+1. 使用 Lifespan 管理应用生命周期（启动/关闭）
+2. CORS 中间件配置，支持跨域请求
+3. 路由模块化，按功能划分
+4. 统一的错误处理和日志记录
 
-【现实例子】就像企业级 Agent 中的客服系统：
-- 用户在网页上打开聊天窗口 → 前端发 HTTP 请求到这个 API
-- API 通过 thread_id 找到该用户的会话历史 → 调用 Agent → 返回回复
-- 用户关闭浏览器明天再来 → 同一个 thread_id → 接着聊
-
-【接口设计】
-POST /chat          — 发送消息并获取 Agent 回复（核心接口）
-POST /chat/stream   — 发送消息并以 SSE 流式返回回复（提升体验）
-POST /session/new   — 创建新会话，返回 thread_id
-GET  /health        — 健康检查（运维监控用）
+【生产实践】企业级 FastAPI 项目结构：
+- 主入口文件（server.py）：负责应用创建、生命周期、中间件配置
+- 路由模块（routes/）：按功能划分 API 路由
+- 服务模块（services/）：业务逻辑处理
+- 数据模型（models/）：Pydantic 数据模型
 """
 
-import src.config  # 必须第一个 import，确保离线模式 patch 生效
-
-import os
-import uuid
+import asyncio
 import logging
-import time
-import json
+import os
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field
 
-from src.agents import get_async_agent
-from src.config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, MAX_ITERATIONS
-from src.memory import get_async_checkpointer, close_async_pool
-from src.prompts import sanitize_input, sanitize_output
-from src.llm.gateway import get_call_stats
-from src.utils.logger import setup_logging, get_logger, WorkflowLogger
+from src.config import (
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_MODEL,
+    MAX_ITERATIONS,
+    KNOWLEDGE_BASE_DIR,
+)
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] [%(name)s] [%(threadName)s] - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # ============================================================
-# 日志配置
+# 全局变量
 # ============================================================
-setup_logging(log_dir="log", level=logging.INFO)
-logger = get_logger(__name__)
-workflow_logger = WorkflowLogger(logger)
-
-# Prometheus 指标集成
-try:
-    from prometheus_metrics import (
-        metrics_endpoint,
-        record_api_request,
-        record_user_session,
-        record_agent_call,
-        PROMETHEUS_AVAILABLE
-    )
-    PROMETHEUS_ENABLED = PROMETHEUS_AVAILABLE
-except ImportError:
-    # 如果 prometheus_metrics 模块不存在，使用空实现
-    PROMETHEUS_ENABLED = False
-    
-    def metrics_endpoint():
-        from fastapi import Response
-        return Response("Prometheus metrics not available", status_code=501)
-    
-    def record_api_request(*args, **kwargs):
-        pass
-    
-    def record_user_session(*args, **kwargs):
-        pass
-    
-    def record_agent_call(*args, **kwargs):
-        pass
+mcp_manager = None
+app_instance: Optional[FastAPI] = None
 
 
 # ============================================================
-# 请求/响应模型（Pydantic）
+# 数据模型
 # ============================================================
-# 【知识点】用 Pydantic BaseModel 定义接口的输入输出
-# FastAPI 会自动做参数校验、生成 OpenAPI 文档（Swagger UI）
-
-
 class ChatRequest(BaseModel):
     """聊天请求体"""
-    message: str = Field(..., min_length=1, max_length=10000, description="用户消息内容")
-    thread_id: str = Field(..., description="会话 ID，用于区分不同用户/会话")
-    model: str = Field(default="deepseek", description="指定 LLM Provider（deepseek / zhipu），为空时使用默认")
+    message: str = Field(..., description="用户消息")
+    thread_id: Optional[str] = Field(None, description="会话线程 ID")
 
 
 class ChatResponse(BaseModel):
     """聊天响应体"""
-    reply: str = Field(..., description="Agent 的回复内容")
-    thread_id: str = Field(..., description="当前会话 ID")
+    response: str = Field(..., description="AI 响应")
+    thread_id: str = Field(..., description="会话线程 ID")
+    sources: list = Field(default_factory=list, description="引用的知识库来源")
+    found_in_kb: bool = Field(False, description="是否在知识库中找到相关信息")
 
 
 class SessionResponse(BaseModel):
     """新建会话响应体"""
     thread_id: str = Field(..., description="新创建的会话 ID")
-
-
-# ============================================================
-# 文档上传相关模型
-# ============================================================
-class DocumentUploadResponse(BaseModel):
-    """文档上传响应体"""
-    success: bool = Field(..., description="是否上传成功")
-    message: str = Field(..., description="响应消息")
-    file_name: str = Field(..., description="上传的文件名")
-    saved_path: str = Field(None, description="保存到知识库的路径")
-    quality_score: float = Field(0.0, description="文档质量评分")
-    duplicate_detected: bool = Field(False, description="是否检测到重复")
-    chunk_count: int = Field(0, description="分块数量")
-    metadata: dict = Field(None, description="文档元数据")
-
-
-class DocumentListResponse(BaseModel):
-    """文档列表响应体"""
-    documents: list = Field(..., description="文档列表")
-    total: int = Field(..., description="文档总数")
-
-
-class DocumentDeleteResponse(BaseModel):
-    """文档删除响应体"""
-    success: bool = Field(..., description="是否删除成功")
-    message: str = Field(..., description="响应消息")
 
 
 # ============================================================
@@ -137,70 +77,36 @@ async def lifespan(app: FastAPI):
     """应用启动/关闭时的生命周期钩子
 
     【知识点】FastAPI 的 lifespan 机制：
-    - yield 之前的代码在应用启动时执行（初始化资源）
-    - yield 之后的代码在应用关闭时执行（清理资源）
+    - 在应用启动前执行异步初始化（如连接数据库、加载模型）
+    - 在应用关闭时执行异步清理（如关闭连接、释放资源）
+    - 使用 asynccontextmanager 确保资源正确释放
 
-    【生产实践】PostgreSQL 连接池生命周期管理：
-    - 启动时：异步 Agent 初始化会自动创建异步连接池
-    - 关闭时：必须显式关闭连接池，释放数据库连接资源
-    - 不关闭会导致：连接泄漏 → 数据库 max_connections 耗尽 → 新请求全部失败
-
-    Args:
-        app: FastAPI 应用实例，由框架自动传入
-
-    Returns:
-        AsyncGenerator: 异步生成器，yield 前为启动逻辑，yield 后为关闭逻辑
+    【生产实践】启动检查清单：
+    1. 初始化日志系统
+    2. 初始化 MCP 管理器（可选）
+    3. 启动知识库文件监听服务
+    4. 检查外部服务状态（如 Prometheus）
     """
-    
+    global mcp_manager
 
-    
-    # 启动时检查（Fail Fast：缺少关键配置直接阻止启动）
-    from src.config import DEEPSEEK_API_KEY, LLM_ZHIPU_API_KEY
-    if not DEEPSEEK_API_KEY and not LLM_ZHIPU_API_KEY:
-        error_msg = "未设置任何 LLM API Key（DEEPSEEK_API_KEY / LLM_ZHIPU_API_KEY），服务无法启动"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    
-    logger.info("Agent API 开始启动...")
+    logger.info("=" * 60)
+    logger.info("Agent API 正在启动...")
+    logger.info("=" * 60)
 
-    # 【生产实践】初始化领域专家系统（含 RAG 引擎预热）
-    from src.agents import initialize_experts
-    await initialize_experts()
-
-    # 【生产实践】预热异步 Agent（含 PostgreSQL 连接池初始化）
-    # 确保第一个用户请求不需要等待连接池创建
-    logger.info("正在预热异步 Agent 及 PostgreSQL 连接池...")
-    await get_async_agent()
-    logger.info("异步 Agent 及 PostgreSQL 连接池预热完成")
-    
-    # 【生产实践】初始化 MCP 管理器
-    # 确保 MCP 工具在服务启动时就可用
-    logger.info("正在初始化 MCP 管理器...")
+    # 1. 初始化 MCP 管理器（可选功能）
+    PROMETHEUS_ENABLED = False
     try:
-        from src.tools import get_mcp_manager, is_mcp_available
-        
-        mcp_manager = await get_mcp_manager()
-        mcp_available = await is_mcp_available()
-        
-        if mcp_available:
-            servers = await mcp_manager.list_servers()
-            connected_servers = [s for s in servers if s["status"] == "connected"]
-            tools = await mcp_manager.list_tools()
-            
-            logger.info(f"MCP 管理器初始化成功")
-            logger.info(f"  已连接服务器: {len(connected_servers)}/{len(servers)}")
-            logger.info(f"  可用工具: {len(tools)} 个")
-            
-            # 显示已连接的服务器
-            for server in connected_servers:
-                logger.info(f"    - {server['name']}: {server['tools_count']} 个工具")
+        from src.tools import create_mcp_manager
+        from src.metrics import PROMETHEUS_ENABLED
+        mcp_manager = await create_mcp_manager()
+        if mcp_manager:
+            logger.info("✅ MCP 管理器初始化成功")
         else:
-            logger.warning("MCP 管理器初始化失败或没有可用的 MCP 服务器")
-            
+            logger.warning("⚠️ MCP 管理器初始化失败，功能可能不可用")
     except Exception as e:
         logger.warning(f"MCP 管理器初始化失败: {e}")
         logger.warning("MCP 功能可能不可用，但服务将继续运行")
-    
+
     # 【生产实践】启动知识库文件监听服务
     # 当知识库文件发生变化时，自动触发增量更新
     logger.info("正在启动知识库文件监听服务...")
@@ -211,7 +117,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"文件监听服务启动失败: {e}")
         logger.warning("文件监听功能不可用，知识库更新需要手动触发")
-    
+
     logger.info("Agent API 启动成功。")
     logger.info("=" * 60)
     logger.info("服务已就绪，可通过以下地址访问:")
@@ -219,7 +125,7 @@ async def lifespan(app: FastAPI):
     logger.info("  - 健康检查: http://localhost:8000/health")
     logger.info("  - MCP 状态: http://localhost:8000/mcp/status")
     logger.info("=" * 60)
-    
+
     # 检查 Prometheus 是否可用
     if PROMETHEUS_ENABLED:
         logger.info("Prometheus 监控已启用")
@@ -230,7 +136,7 @@ async def lifespan(app: FastAPI):
 
     # 【生产实践】优雅关闭 — 释放所有资源
     logger.info("Agent API 正在关闭，释放所有资源...")
-    
+
     # 1. 停止知识库文件监听服务
     try:
         from src.rag import stop_all_file_watchers
@@ -239,7 +145,7 @@ async def lifespan(app: FastAPI):
         logger.info("知识库文件监听服务已停止")
     except Exception as e:
         logger.warning(f"停止文件监听服务失败: {e}")
-    
+
     # 2. 关闭 MCP 管理器
     try:
         from src.tools import close_mcp_manager
@@ -248,526 +154,166 @@ async def lifespan(app: FastAPI):
         logger.info("MCP 管理器已关闭")
     except Exception as e:
         logger.warning(f"关闭 MCP 管理器失败: {e}")
-    
-    # 3. 释放 PostgreSQL 异步连接池
-    logger.info("正在释放 PostgreSQL 连接池资源...")
-    await close_async_pool()
-    logger.info("PostgreSQL 连接池资源已释放")
-    
-    logger.info("Agent API 已完全关闭")
-    logger.info("=" * 60)
+
+    # 3. 关闭内存池
+    try:
+        from src.memory import close_async_pool
+        logger.info("正在关闭记忆服务...")
+        await close_async_pool()
+        logger.info("记忆服务已关闭")
+    except Exception as e:
+        logger.warning(f"关闭记忆服务失败: {e}")
+
+    logger.info("Agent API 已关闭")
 
 
 # ============================================================
-# 创建 FastAPI 应用
+# 应用创建
 # ============================================================
 app = FastAPI(
-    title="Agent Lab API",
-    description="企业级 ReAct Agent 服务 — 基于 LangGraph + FastAPI",
+    title="AI Agent API",
+    description="基于 LangGraph 的多专家 Agent 系统",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# 【知识点】CORS 中间件 — 允许前端跨域访问
-# 开发阶段允许所有来源，生产环境应限制为具体域名
+# CORS 配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],        # 生产环境改为具体域名列表
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# API 请求日志和监控中间件
-@app.middleware("http")
-async def logging_and_prometheus_middleware(request: Request, call_next):
-    """记录 API 请求日志和 Prometheus 指标的中间件"""
-    start_time = time.time()
-    
-    try:
-        response = await call_next(request)
-        elapsed = time.time() - start_time
-        
-        # 记录 API 请求日志
-        if response.status_code < 400:
-            logger.info(f"API请求: {request.method} {request.url.path} - {response.status_code} ({elapsed:.3f}s)")
-        elif response.status_code < 500:
-            logger.warning(f"客户端错误: {request.method} {request.url.path} - {response.status_code} ({elapsed:.3f}s)")
-        else:
-            logger.error(f"服务器错误: {request.method} {request.url.path} - {response.status_code} ({elapsed:.3f}s)")
-        
-        # 记录 Prometheus 指标
-        if PROMETHEUS_ENABLED:
-            record_api_request(
-                method=request.method,
-                endpoint=request.url.path,
-                duration=elapsed,
-                status_code=response.status_code
-            )
-        
-        return response
-        
-    except Exception as e:
-        elapsed = time.time() - start_time
-        
-        # 记录错误日志
-        logger.error(f"API请求异常: {request.method} {request.url.path} - 500 ({elapsed:.3f}s) - {str(e)}")
-        
-        # 记录 Prometheus 错误指标
-        if PROMETHEUS_ENABLED:
-            record_api_request(
-                method=request.method,
-                endpoint=request.url.path,
-                duration=elapsed,
-                status_code=500  # 内部错误
-            )
-        
-        raise
-
-# 【知识点】静态文件托管
-# 将 static 目录挂载到 /static 路径，前端 HTML/CSS/JS 放在这里
-# 访问 http://localhost:8000/static/index.html 即可打开聊天界面
-_static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "static")
-app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")
-
 
 # ============================================================
-# 工具函数
+# 健康检查
 # ============================================================
-def extract_ai_response(result: dict) -> str:
-    """从 Agent 执行结果中提取最终的 AI 回复
-
-    Args:
-        result: Agent invoke() 返回的状态字典，包含 messages 列表
-
-    Returns:
-        str: 最后一条有内容的 AIMessage 的文本；如果没有找到则返回默认提示语
-    """
-    messages = result.get("messages", [])
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            return msg.content
-    return "抱歉，我没有生成有效的回复。"
-
-
-# ============================================================
-# API 接口
-# ============================================================
-@app.get("/metrics")
-async def metrics():
-    """Prometheus metrics 端点
-    
-    【知识点】Prometheus 监控标准端点：
-    - Prometheus 定期从此端点抓取指标数据
-    - 返回格式为 Prometheus 文本格式
-    - 包含所有四大黄金指标：延迟、流量、错误、饱和度
-    
-    Args:
-        无参数
-        
-    Returns:
-        Response: Prometheus 格式的指标数据
-    """
-    return await metrics_endpoint()
-
-
 @app.get("/health")
 async def health_check():
-    """健康检查接口
-
-    【知识点】健康检查是生产部署的标配：
-    - 负载均衡器（Nginx/ALB）定期调用此接口判断实例是否存活
-    - K8s 的 liveness/readiness probe 也依赖它
-
-    Args:
-        无参数
-
-    Returns:
-        dict: 包含 status（服务状态）、model（模型名称）、api_key_configured（API Key 是否已配置）
-    """
+    """健康检查接口"""
     return {
         "status": "healthy",
-        "model": DEEPSEEK_MODEL,
-        "api_key_configured": bool(DEEPSEEK_API_KEY),
-        "prometheus_enabled": PROMETHEUS_ENABLED,
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
     }
 
 
-@app.get("/llm/stats")
-async def llm_stats():
-    """LLM Gateway 调用统计
+# ============================================================
+# 对话接口
+# ============================================================
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """聊天接口"""
+    from src.agents.workflow import agent_executor
+    from src.memory.manager import get_memory_manager
 
-    【知识点】运维监控接口，用于观察：
-    - 各 Provider 的调用次数分布
-    - 降级触发次数（fallback_calls 过高说明主模型不稳定）
-    - 错误率（error_calls / total_calls）
-
-    Args:
-        无参数
-
-    Returns:
-        dict: 调用统计数据
-    """
-    stats = get_call_stats()
-    return {
-        "total_calls": stats.total_calls,
-        "success_calls": stats.success_calls,
-        "fallback_calls": stats.fallback_calls,
-        "error_calls": stats.error_calls,
-        "calls_by_provider": stats.calls_by_provider,
-    }
-
-
-@app.get("/mcp/status")
-async def mcp_status():
-    """MCP 工具状态查询
-
-    【知识点】MCP监控接口，用于观察：
-    - 各MCP服务器的可用状态
-    - 可用工具列表
-    - 工具调用统计
-
-    Args:
-        无参数
-
-    Returns:
-        dict: MCP状态信息
-    """
     try:
-        from src.tools import get_mcp_manager
-        from src.tools.mcp import get_available_mcp_tools
-        
-        # 获取MCP管理器（会自动初始化）
-        manager = await get_mcp_manager()
-        
-        # 列出服务器和工具
-        servers = await manager.list_servers()
-        tools = await get_available_mcp_tools()
-        
-        # 转换服务器格式以兼容旧接口
-        clients = []
-        for server in servers:
-            clients.append({
-                "name": server["name"],
-                "available": server["status"] == "connected",
-                "status": server["status"],
-                "disabled": server["disabled"],
-                "tools_count": server["tools_count"],
-                "error_count": server["error_count"]
-            })
-        
-        # 统计信息
-        total_clients = len(clients)
-        available_clients = sum(1 for c in clients if c.get("available", False))
-        total_tools = len(tools)
-        available_tools = sum(1 for t in tools if t.get("available", False))
-        
-        # 查找weather_cn工具
-        weather_tools = [t for t in tools if "weather_cn" in t.get("name", "")]
-        
-        return {
-            "status": "healthy",
-            "clients": {
-                "total": total_clients,
-                "available": available_clients,
-                "list": clients
-            },
-            "tools": {
-                "total": total_tools,
-                "available": available_tools,
-                "list": tools[:10]  # 只返回前10个工具
-            },
-            "weather_cn_available": len(weather_tools) > 0,
-            "weather_tools": weather_tools
+        thread_id = request.thread_id
+        if not thread_id:
+            thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        memory_manager = get_memory_manager()
+
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "model": "deepseek" if DEEPSEEK_API_KEY else "ollama",
+            }
         }
-        
+
+        result = await agent_executor.ainvoke(
+            {"messages": [("user", request.message)]},
+            config=config
+        )
+
+        response = result.get("messages", [])[-1].content
+        sources = result.get("sources", [])
+        found_in_kb = result.get("found_in_kb", False)
+
+        return ChatResponse(
+            response=response,
+            thread_id=thread_id,
+            sources=sources,
+            found_in_kb=found_in_kb
+        )
+
     except Exception as e:
-        logger.error(f"MCP状态查询失败: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "clients": {"total": 0, "available": 0, "list": []},
-            "tools": {"total": 0, "available": 0, "list": []},
-            "weather_cn_available": False,
-            "weather_tools": []
-        }
+        logger.error(f"聊天接口出错: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/mcp/tool/call")
-async def mcp_tool_call(request: dict):
-    """直接调用MCP工具
-
-    【知识点】调试接口，用于测试MCP工具功能
-    - 支持直接调用任意MCP工具
-    - 返回原始调用结果
-    - 用于开发和调试
-
-    Args:
-        request: 包含server, tool, params的字典
-
-    Returns:
-        dict: 工具调用结果
-    """
-    try:
-        server = request.get("server")
-        tool = request.get("tool")
-        params = request.get("params", {})
-        
-        if not server or not tool:
-            raise HTTPException(
-                status_code=400,
-                detail="缺少必要参数: server 和 tool"
-            )
-        
-        from src.tools import get_mcp_manager
-        
-        manager = await get_mcp_manager()
-        result = await manager.call_tool_direct(server, tool, **params)
-        
-        return {
-            "success": True,
-            "result": result
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"MCP工具调用失败: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-@app.post("/session/new", response_model=SessionResponse)
+@app.post("/session", response_model=SessionResponse)
 async def create_session():
-    """创建新会话
-
-    【知识点】会话管理流程：
-    1. 前端首次打开聊天窗口 → 调用此接口获取 thread_id
-    2. 后续每次发消息都带上这个 thread_id
-    3. Checkpointer 通过 thread_id 自动管理对话历史
-
-    Args:
-        无参数
-
-    Returns:
-        SessionResponse: 包含新生成的 thread_id（UUID 字符串）
-    """
-    thread_id = str(uuid.uuid4())
-    
-    # 记录用户会话指标
-    if PROMETHEUS_ENABLED:
-        record_user_session(status="created")
-        record_user_session(status="active")
-    
+    """创建新会话"""
+    import uuid
+    thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     return SessionResponse(thread_id=thread_id)
 
 
-# ==================== 【已屏蔽】同步聊天接口 ====================
-# 注：当前只提供流式对话接口 /chat/stream
-# @app.post("/chat", response_model=ChatResponse)
-# async def chat(request: ChatRequest):
-#     """发送消息并获取 Agent 回复（同步模式）
-# 
-#     【知识点】这是最核心的接口，完整流程：
-#     1. 前端发送 { message: "你好", thread_id: "xxx" }
-#     2. API 将 message 包装为 HumanMessage
-#     3. 通过 thread_id 让 Checkpointer 自动加载历史消息
-#     4. Agent 执行 ReAct 循环（思考 → 工具调用 → 回复）
-#     5. 提取最终回复返回给前端
-# 
-#     【企业实战】为什么前端只传 message 和 thread_id？
-#     - 对话历史由后端 Checkpointer 管理，前端不需要维护
-#     - 减少网络传输量（不用每次把完整历史发过来）
-#     - 安全：历史数据不暴露给前端
-# 
-#     Args:
-#         request: ChatRequest 请求体，包含 message（用户消息）和 thread_id（会话 ID）
-# 
-#     Returns:
-#         ChatResponse: 包含 reply（Agent 回复文本）和 thread_id（当前会话 ID）
-# 
-#     Raises:
-#         HTTPException(503): LLM API Key 未配置
-#         HTTPException(500): Agent 执行过程中出错
-#     """
-#     if not DEEPSEEK_API_KEY:
-#         raise HTTPException(status_code=503, detail="LLM API Key 未配置")
-# 
-#     try:
-#         # 【安全防护】输入校验 — 检测 Prompt 注入风险
-#         cleaned_input, is_risky, risk_desc = sanitize_input(request.message)
-#         if is_risky:
-#             logger.warning(f"Prompt 注入风险 — thread_id={request.thread_id}, {risk_desc}")
-# 
-#         async_agent = await get_async_agent()
-#         start_time = time.time()
-#         result = await async_agent.ainvoke(
-#             {"messages": [HumanMessage(content=cleaned_input)]},
-#             config={
-#                 "configurable": {"thread_id": request.thread_id, "model": request.model},
-#                 "recursion_limit": MAX_ITERATIONS,
-#             },
-#         )
-#         elapsed = time.time() - start_time
-#         reply = extract_ai_response(result)
-# 
-#         # 【安全防护】输出过滤 — 脱敏 + 泄露检测
-#         reply = sanitize_output(reply)
-#         
-#         # 记录 Agent 调用指标
-#         if PROMETHEUS_ENABLED:
-#             # 这里需要从 result 中提取 Agent 类型和路由信息
-#             # 简化处理：假设为通用聊天类型
-#             agent_type = "chat"
-#             route = "general"  # 可以从 result 中提取实际路由
-#             
-#             record_agent_call(
-#                 agent_type=agent_type,
-#                 route=route,
-#                 duration=elapsed,
-#                 status="success"
-#             )
-# 
-#         return ChatResponse(reply=reply, thread_id=request.thread_id)
-# 
-#     except Exception as e:
-#         logger.error(f"Agent 执行出错: {e}", exc_info=True)
-#         
-#         # 记录 Agent 错误指标
-#         if PROMETHEUS_ENABLED:
-#             record_agent_call(
-#                 agent_type="chat",
-#                 route="error",
-#                 duration=0,  # 执行失败，没有有效耗时
-#                 status="error"
-#             )
-#         
-#         raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
+# ============================================================
+# 专家 Agent 接口
+# ============================================================
+@app.get("/experts")
+async def list_experts():
+    """获取所有专家 Agent 列表"""
+    from src.agents import list_experts
+
+    try:
+        experts = list_experts()
+        return {"experts": experts, "total": len(experts)}
+    except Exception as e:
+        logger.error(f"获取专家列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """发送消息并以 SSE 流式返回 Agent 回复
+@app.get("/experts/{expert_name}")
+async def get_expert_info(expert_name: str):
+    """获取指定专家 Agent 信息"""
+    from src.agents import get_expert
 
-    【知识点】SSE（Server-Sent Events）流式输出：
-    - 用户不用等 Agent 完整执行完才看到回复
-    - 像 ChatGPT 一样逐字/逐块显示，体验更好
-    - 前端用 EventSource 或 fetch + ReadableStream 接收
+    try:
+        expert = get_expert(expert_name)
+        if not expert:
+            raise HTTPException(status_code=404, detail=f"专家 {expert_name} 不存在")
+        return expert.get_metadata()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取专家信息失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    【实现原理】
-    LangGraph 的 astream_events() 会在 Agent 执行过程中实时产出事件：
-    - on_chat_model_stream：LLM 生成的每个 token
-    - on_tool_start / on_tool_end：工具调用开始/结束
-    我们过滤出 LLM 的 token 流，逐个推送给前端
 
-    Args:
-        request: ChatRequest 请求体，包含 message（用户消息）和 thread_id（会话 ID）
+@app.post("/experts/{expert_name}/chat")
+async def chat_with_expert(expert_name: str, request: ChatRequest):
+    """与指定专家 Agent 聊天"""
+    from src.agents import get_expert
 
-    Returns:
-        StreamingResponse: SSE 格式的流式响应，每个 chunk 格式为 "data: 文本内容\\n\\n"，
-                           流结束时发送 "data: [DONE]\\n\\n"
+    try:
+        expert = get_expert(expert_name)
+        if not expert:
+            raise HTTPException(status_code=404, detail=f"专家 {expert_name} 不存在")
 
-    Raises:
-        HTTPException(503): LLM API Key 未配置
-    """
-    if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=503, detail="LLM API Key 未配置")
-    
-    # 记录工作流开始
-    workflow_logger.workflow_start(request.thread_id, request.message)
-    
-    # 【安全防护】输入校验
-    cleaned_input, is_risky, risk_desc = sanitize_input(request.message)
-    if is_risky:
-        logger.warning(f"Prompt 注入风险 — thread_id={request.thread_id[:8]}, {risk_desc}")
+        result = await expert.process(
+            query=request.message,
+            config={"configurable": {"model": "deepseek" if DEEPSEEK_API_KEY else "ollama"}},
+            context={"thread_id": request.thread_id}
+        )
 
-    async def event_generator():
-        try:
-            async_agent = await get_async_agent()
-            full_text = ""
-            
-            async for event in async_agent.astream_events(
-                {"messages": [HumanMessage(content=cleaned_input)]},
-                config={
-                    "configurable": {"thread_id": request.thread_id, "model": request.model},
-                    "recursion_limit": MAX_ITERATIONS,
-                },
-                version="v2",
-            ):
-                event_type = event.get("event", "")
-                
-                # LLM 流式事件内容过滤
-                if event_type == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk is None:
-                        continue
-                    
-                    content = None
-                    if hasattr(chunk, "content"):
-                        content = chunk.content
-                    elif isinstance(chunk, dict) and "content" in chunk:
-                        content = chunk["content"]
-                    
-                    if content:
-                        if not isinstance(content, str):
-                            content = str(content)
-                        
-                        full_text += content
-                        escaped = content.replace("\n", "\\n")
-                        yield f"data: {escaped}\n\n"
-                
-                # 工具调用开始事件
-                elif event_type == "on_tool_start":
-                    tool_name = event.get("name", "unknown")
-                    args = event.get("data", {}).get("input", {})
-                    
-                    workflow_logger.tool_execution(request.thread_id, tool_name, args)
-                    yield f"data: [TOOL_START]{{\"name\": \"{tool_name}\", \"args\": {json.dumps(args)}}}\n\n"
-                
-                # 工具调用结束事件
-                elif event_type == "on_tool_end":
-                    tool_name = event.get("name", "unknown")
-                    output = event.get("data", {}).get("output", "")
-                    
-                    if hasattr(output, "content"):
-                        result = output.content
-                    else:
-                        result = str(output)
-                    
-                    workflow_logger.tool_result(request.thread_id, tool_name, True, str(result)[:50])
-                    if result:
-                        result_str = str(result).replace("\n", "\\n")
-                        yield f"data: [TOOL_RESULT]{{\"name\": \"{tool_name}\", \"result\": \"{result_str}\"}}\n\n"
+        return result
 
-            # 【安全防护】流式输出完成后，对完整文本做泄露检测
-            safe_text = sanitize_output(full_text)
-            if safe_text != full_text:
-                logger.error(f"🚨 流式输出泄露检测触发")
-                yield f"data: [REPLACE]{safe_text}\n\n"
-
-            workflow_logger.workflow_end(request.thread_id)
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            workflow_logger.error(request.thread_id, "chat_stream", e)
-            yield f"data: [ERROR] {str(e)}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"专家聊天接口出错: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
-# 文档上传知识库接口
+# RAG 接口
 # ============================================================
-@app.post("/rag/upload", response_model=DocumentUploadResponse)
+@app.post("/rag/upload")
 async def upload_document_to_knowledge_base(
     file: UploadFile = File(...),
     knowledge_base_name: str = "knowledge_base_agent",
@@ -776,13 +322,13 @@ async def upload_document_to_knowledge_base(
 ):
     """
     上传文档到知识库
-    
+
     【知识点】完整的文档处理流程：
     1. 接收上传的文件（支持PDF/Word/Excel/TXT/MD/HTML/图片）
     2. 使用 DataCleaner 执行7步清洗流水线
     3. 将清洗后的Markdown文档保存到知识库目录
     4. 支持自定义知识库名称和分块参数
-    
+
     【支持的文件类型】
     - PDF: .pdf
     - Word: .docx, .doc
@@ -791,89 +337,33 @@ async def upload_document_to_knowledge_base(
     - Markdown: .md
     - HTML: .html
     - Image: .png, .jpg, .jpeg, .bmp, .tiff（需要OCR支持）
-    
+
     Args:
         file: 上传的文件
         knowledge_base_name: 目标知识库名称，默认为 knowledge_base_agent
         chunk_size: 分块大小，默认500字符
         chunk_overlap: 块重叠大小，默认50字符
-        
+
     Returns:
         DocumentUploadResponse: 上传结果，包含质量评分、分块数等信息
     """
-    from src.rag import DataCleaner
-    from src.config import KNOWLEDGE_BASE_DIR
-    
+    from src.rag import get_document_service
+
     try:
-        # 检查文件类型
-        allowed_extensions = {'.pdf', '.docx', '.doc', '.xlsx', '.xls', 
-                              '.txt', '.md', '.html', '.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
-        file_ext = os.path.splitext(file.filename)[1].lower()
-        if file_ext not in allowed_extensions:
-            raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file_ext}")
-        
-        # 创建临时文件
-        temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_path = os.path.join(temp_dir, file.filename)
-        
-        # 保存上传的文件
-        with open(temp_path, 'wb') as f:
-            f.write(await file.read())
-        
-        logger.info(f"文件已保存到临时目录: {temp_path}")
-        
-        # 初始化数据清洗器
-        cleaner = DataCleaner()
-        
-        # 执行完整的7步处理流水线
-        result, chunks = cleaner.process(
-            temp_path,
+        doc_service = get_document_service()
+        result = await doc_service.upload_document(
+            file_content=await file.read(),
+            filename=file.filename,
+            knowledge_base_name=knowledge_base_name,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
         )
-        
-        # 构建知识库路径
-        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
-        
-        # 保存到知识库
-        base_name = os.path.splitext(file.filename)[0]
-        saved = cleaner.save_to_knowledge_base(result, chunks, knowledge_base_path, base_name)
-        
-        # 删除临时文件
-        os.remove(temp_path)
-        
-        if saved:
-            saved_path = os.path.join(knowledge_base_path, f"{base_name}.md")
-            return DocumentUploadResponse(
-                success=True,
-                message="文档上传并清洗成功",
-                file_name=file.filename,
-                saved_path=saved_path,
-                quality_score=result.quality_score,
-                duplicate_detected=result.duplicate_detected,
-                chunk_count=len(chunks),
-                metadata=result.metadata
-            )
+
+        if result.success:
+            return result
         else:
-            if result.duplicate_detected:
-                return DocumentUploadResponse(
-                    success=False,
-                    message="检测到重复文档，未保存",
-                    file_name=file.filename,
-                    duplicate_detected=True,
-                    chunk_count=len(chunks),
-                    metadata=result.metadata
-                )
-            else:
-                return DocumentUploadResponse(
-                    success=False,
-                    message="文档保存失败",
-                    file_name=file.filename,
-                    chunk_count=len(chunks),
-                    metadata=result.metadata
-                )
-        
+            raise HTTPException(status_code=400, detail=result.message)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -881,123 +371,208 @@ async def upload_document_to_knowledge_base(
         raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
 
 
-@app.get("/rag/documents", response_model=DocumentListResponse)
+@app.get("/rag/documents")
 async def list_documents(knowledge_base_name: str = "knowledge_base_agent"):
     """
     获取知识库中的文档列表
-    
+
     Args:
         knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
-        
+
     Returns:
         DocumentListResponse: 文档列表
     """
-    from src.config import KNOWLEDGE_BASE_DIR
-    
+    from src.rag import get_document_service
+
     try:
-        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
-        
-        if not os.path.exists(knowledge_base_path):
-            return DocumentListResponse(documents=[], total=0)
-        
-        documents = []
-        for filename in os.listdir(knowledge_base_path):
-            if filename.endswith('.md') and not filename.endswith('_metadata.json'):
-                file_path = os.path.join(knowledge_base_path, filename)
-                file_stat = os.stat(file_path)
-                documents.append({
-                    "name": filename,
-                    "path": file_path,
-                    "size": file_stat.st_size,
-                    "modified_at": datetime.fromtimestamp(file_stat.st_mtime).isoformat()
-                })
-        
-        return DocumentListResponse(documents=documents, total=len(documents))
-    
+        doc_service = get_document_service()
+        return doc_service.list_documents(knowledge_base_name)
     except Exception as e:
-        logger.error(f"获取文档列表失败: {e}")
+        logger.error(f"获取文档列表失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")
 
 
-@app.delete("/rag/documents/{doc_name}", response_model=DocumentDeleteResponse)
+@app.delete("/rag/documents/{doc_name}")
 async def delete_document(doc_name: str, knowledge_base_name: str = "knowledge_base_agent"):
     """
     删除知识库中的文档
-    
+
     Args:
         doc_name: 文档名称（含扩展名）
         knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
-        
+
     Returns:
         DocumentDeleteResponse: 删除结果
     """
-    from src.config import KNOWLEDGE_BASE_DIR
-    
+    from src.rag import get_document_service
+
     try:
-        knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
-        doc_path = os.path.join(knowledge_base_path, doc_name)
-        
-        if not os.path.exists(doc_path):
-            return DocumentDeleteResponse(
-                success=False,
-                message=f"文档不存在: {doc_name}"
-            )
-        
-        os.remove(doc_path)
-        
-        # 同时删除对应的元数据文件
-        base_name = os.path.splitext(doc_name)[0]
-        metadata_path = os.path.join(knowledge_base_path, f"{base_name}_metadata.json")
-        if os.path.exists(metadata_path):
-            os.remove(metadata_path)
-        
-        # 同时删除分块目录
-        chunks_dir = os.path.join(knowledge_base_path, f"{base_name}_chunks")
-        if os.path.exists(chunks_dir):
-            import shutil
-            shutil.rmtree(chunks_dir)
-        
-        return DocumentDeleteResponse(
-            success=True,
-            message=f"文档删除成功: {doc_name}"
-        )
-    
+        doc_service = get_document_service()
+        result = doc_service.delete_document(knowledge_base_name, doc_name)
+
+        if result.success:
+            return result
+        else:
+            raise HTTPException(status_code=404, detail=result.message)
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"删除文档失败: {e}")
+        logger.error(f"删除文档失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
 
 
-@app.post("/rag/rebuild-index")
+@app.post("/rag/rebuild")
 async def rebuild_rag_index(knowledge_base_name: str = "knowledge_base_agent"):
     """
-    重建RAG索引（知识库更新后调用）
-    
+    重建指定知识库的 RAG 索引
+
     Args:
         knowledge_base_name: 知识库名称，默认为 knowledge_base_agent
-        
+
     Returns:
         dict: 重建结果
     """
     from src.rag import RAGEngine
     from src.config import KNOWLEDGE_BASE_DIR
-    
+
     try:
         knowledge_base_path = os.path.join(KNOWLEDGE_BASE_DIR, knowledge_base_name)
-        
+
         if not os.path.exists(knowledge_base_path):
-            raise HTTPException(status_code=400, detail=f"知识库不存在: {knowledge_base_name}")
-        
-        # 创建RAG引擎会自动重建索引
+            raise HTTPException(status_code=404, detail=f"知识库不存在: {knowledge_base_name}")
+
         engine = RAGEngine(knowledge_dir=knowledge_base_path)
-        
+
         return {
             "success": True,
             "message": "RAG索引重建成功",
             "knowledge_base": knowledge_base_name
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"重建RAG索引失败: {e}")
-        raise HTTPException(status_code=500, detail=f"重建索引失败: {str(e)}")
+        logger.error(f"RAG索引重建失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"RAG索引重建失败: {str(e)}")
+
+
+# ============================================================
+# 记忆接口
+# ============================================================
+@app.get("/memory/{thread_id}")
+async def get_memory(thread_id: str):
+    """获取指定会话的记忆"""
+    from src.memory.manager import get_memory_manager
+
+    try:
+        memory_manager = get_memory_manager()
+        memory = await memory_manager.get_memory(thread_id)
+        return {"thread_id": thread_id, "memory": memory}
+    except Exception as e:
+        logger.error(f"获取记忆失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/memory/{thread_id}")
+async def clear_memory(thread_id: str):
+    """清除指定会话的记忆"""
+    from src.memory.manager import get_memory_manager
+
+    try:
+        memory_manager = get_memory_manager()
+        await memory_manager.clear_memory(thread_id)
+        return {"success": True, "message": f"记忆已清除: {thread_id}"}
+    except Exception as e:
+        logger.error(f"清除记忆失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# LLM 统计接口
+# ============================================================
+@app.get("/llm/stats")
+async def get_llm_stats():
+    """获取 LLM 调用统计"""
+    from src.llm.gateway import get_call_stats
+
+    try:
+        stats = get_call_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"获取LLM统计失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# MCP 接口
+# ============================================================
+@app.get("/mcp/status")
+async def get_mcp_status():
+    """获取 MCP 服务状态"""
+    global mcp_manager
+
+    if mcp_manager is None:
+        return {
+            "available": False,
+            "message": "MCP 管理器未初始化"
+        }
+
+    try:
+        return {
+            "available": True,
+            "message": "MCP 管理器运行中",
+            "server_count": len(mcp_manager._servers) if hasattr(mcp_manager, '_servers') else 0
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "message": f"MCP 状态检查失败: {str(e)}"
+        }
+
+
+@app.get("/mcp/servers")
+async def list_mcp_servers():
+    """获取已注册的 MCP 服务器列表"""
+    global mcp_manager
+
+    if mcp_manager is None:
+        return {"servers": [], "total": 0}
+
+    try:
+        servers = mcp_manager.list_servers() if hasattr(mcp_manager, 'list_servers') else []
+        return {"servers": servers, "total": len(servers)}
+    except Exception as e:
+        logger.error(f"获取MCP服务器列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mcp/execute")
+async def execute_mcp_tool(server_name: str, tool_name: str, arguments: dict = None):
+    """执行 MCP 工具"""
+    global mcp_manager
+
+    if mcp_manager is None:
+        raise HTTPException(status_code=503, detail="MCP 管理器未初始化")
+
+    try:
+        result = await mcp_manager.execute_tool(server_name, tool_name, arguments or {})
+        return {"success": True, "result": result}
+    except Exception as e:
+        logger.error(f"MCP工具执行失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# 主程序入口
+# ============================================================
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "src.api.server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
