@@ -928,8 +928,18 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
         
         # 如果是复杂分解任务，且任务已完成
         if plan and len(plan) > 1:
-            # 找到所有非工具调用的 AI 消息
-            ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.content and not m.tool_calls]
+            # 【修复】找到最后一条用户消息的位置，只保留之后的 AI 消息
+            # 这样可以保留同一个对话轮次内多个 Agent 的回复（多任务协作），同时排除历史对话轮次的回复
+            last_human_idx = None
+            for i, m in enumerate(messages):
+                if isinstance(m, HumanMessage):
+                    last_human_idx = i
+            
+            # 只保留最后一条用户消息之后的 AI 消息
+            if last_human_idx is not None:
+                ai_messages = [m for m in messages[last_human_idx+1:] if isinstance(m, AIMessage) and m.content and not m.tool_calls]
+            else:
+                ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.content and not m.tool_calls]
             
             # 过滤掉一些简短的过渡消息（如“我先查一下...”、“好的，我为您规划...”）
             meaningful_msgs = []
@@ -941,7 +951,7 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
                     seen_content.add(content)
             
             if len(meaningful_msgs) > 1:
-                # 拼接所有有意义的回复
+                # 拼接所有有意义的回复（多 Agent 协作场景）
                 combined_content = "\n\n".join([m.content for m in meaningful_msgs])
                 workflow_logger.node_exit("summary", thread_id, f"合并了 {len(meaningful_msgs)} 条子任务回复")
                 return {"messages": [AIMessage(content=combined_content)]}

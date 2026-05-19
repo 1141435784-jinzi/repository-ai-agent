@@ -58,7 +58,7 @@ async def chat_stream(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/session", response_model=SessionResponse)
+@router.post("/session/new", response_model=SessionResponse)
 async def create_session():
     """创建新会话"""
     session_service = SessionService()

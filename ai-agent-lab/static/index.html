@@ -417,20 +417,37 @@
         try {
             if (typeof marked !== 'undefined' && marked.parse) {
                 // marked v15+：通过第二个参数传配置
-                let html = marked.parse(text, { breaks: true, gfm: true });
+                const options = { 
+                    breaks: true, 
+                    gfm: true,
+                    mangle: false,
+                    headerIds: false
+                };
+                let html = marked.parse(text, options);
+                
+                // 代码高亮
                 if (typeof hljs !== 'undefined') {
                     const temp = document.createElement('div');
                     temp.innerHTML = html;
                     temp.querySelectorAll('pre code').forEach(block => {
-                        hljs.highlightElement(block);
+                        try {
+                            hljs.highlightElement(block);
+                        } catch (e) {
+                            console.warn('代码高亮失败:', e);
+                        }
                     });
                     html = temp.innerHTML;
                 }
+                
+                console.debug('Markdown 渲染成功:', { inputLength: text.length, outputLength: html.length });
                 return html;
+            } else {
+                console.warn('marked 库未加载，降级为纯文本');
             }
         } catch (e) {
             console.warn('Markdown 渲染失败，降级为纯文本:', e);
         }
+        // 降级方案：转义 HTML 并保留换行
         return text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
     }
 
@@ -454,7 +471,7 @@
 
     async function createNewSession() {
         try {
-            const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/chat/session/new`, { method: 'POST' });
             const data = await res.json();
             threadId = data.thread_id;
             localStorage.setItem('agent_lab_thread_id', threadId);
@@ -517,6 +534,49 @@
             const decoder = new TextDecoder();
             let fullText = '';
             let buffer = ''; // 新增：用于处理 SSE 分包的缓冲区
+            
+            // SSE 消息处理函数
+            function processSSEMessage(completeData) {
+                const lines = completeData.split('\n');
+                for (const line of lines) {
+                    // 【修复】改进 SSE 解析：支持多种数据格式
+                    let data = line;
+                    if (line.startsWith('data: ')) {
+                        data = line.slice(6);
+                    } else if (line.startsWith('data:')) {
+                        data = line.slice(5);
+                    }
+                    
+                    // 跳过空行和注释
+                    if (!data || data.trim() === '' || data.trim() === '[DONE]') continue;
+                    
+                    if (data.startsWith('[ERROR]')) {
+                        fullText += `\n❌ 错误: ${data.slice(7)}`;
+                        return;
+                    }
+                    if (data.startsWith('[REPLACE]')) {
+                        // 安全防护：服务端检测到敏感信息泄露，用安全文本替换
+                        fullText = data.slice(9);
+                        return;
+                    }
+                    if (data.startsWith('[TOOL_START]')) {
+                        try {
+                            const toolData = JSON.parse(data.slice(12));
+                            // 在 UI 上显示一个精简的工具调用状态
+                            fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
+                        } catch (e) {}
+                        return;
+                    }
+                    if (data.startsWith('[TOOL_RESULT]')) {
+                        // 隐藏原始工具结果，保持界面整洁
+                        // 如果需要调试，可以在 console 打印
+                        console.log('Tool Result:', data.slice(13));
+                        return;
+                    }
+                    // 还原服务端转义的换行符
+                    fullText += data.replace(/\\n/g, '\n');
+                }
+            }
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -525,46 +585,31 @@
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk; // 将新到的数据加入缓冲区
 
-                // 解析 SSE 数据行
-                // SSE 规范：数据以 \n\n 分隔
-                let boundary = buffer.lastIndexOf('\n\n');
-                if (boundary === -1) continue; // 还没有完整的消息，继续等待
-
-                const completeData = buffer.substring(0, boundary);
-                buffer = buffer.substring(boundary + 2); // 剩下的存回缓冲区
-
-                const lines = completeData.split('\n');
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6);
-                    if (data === '[DONE]') continue;
-                    if (data.startsWith('[ERROR]')) {
-                        fullText += `\n❌ 错误: ${data}`;
-                        continue;
-                    }
-                    if (data.startsWith('[REPLACE]')) {
-                        // 安全防护：服务端检测到敏感信息泄露，用安全文本替换
-                        fullText = data.slice(9);
-                        continue;
-                    }
-                    if (data.startsWith('[TOOL_START]')) {
-                        try {
-                            const toolData = JSON.parse(data.slice(12));
-                            // 在 UI 上显示一个精简的工具调用状态
-                            fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
-                        } catch (e) {}
-                        continue;
-                    }
-                    if (data.startsWith('[TOOL_RESULT]')) {
-                        // 隐藏原始工具结果，保持界面整洁
-                        // 如果需要调试，可以在 console 打印
-                        console.log('Tool Result:', data.slice(13));
-                        continue;
-                    }
-                    // 还原服务端转义的换行符
-                    fullText += data.replace(/\\n/g, '\n');
+                // 【修复】改进 SSE 解析：正确处理内容中包含 \n\n 的情况
+                // SSE 规范：每个 data: 行后面跟 \n，消息结束是 \n\n
+                // 问题：Markdown 内容中可能包含 \n\n（段落分隔），不能简单用 lastIndexOf('\n\n')
+                while (true) {
+                    // 找完整的消息块：以 data: 开头，以 \n\n 结尾
+                    const dataStart = buffer.indexOf('data: ');
+                    if (dataStart === -1) break; // 没有找到 data: 开头
+                    
+                    // 从 data: 之后找消息结束符
+                    const remaining = buffer.substring(dataStart);
+                    const msgEnd = remaining.indexOf('\n\n');
+                    if (msgEnd === -1) break; // 还没有完整的消息
+                    
+                    // 提取完整的消息内容
+                    const completeMsg = remaining.substring(0, msgEnd);
+                    const completeData = completeMsg;
+                    
+                    // 更新缓冲区：移除已处理的部分
+                    buffer = buffer.substring(dataStart + completeMsg.length + 2);
+                    
+                    // 处理这条消息
+                    processSSEMessage(completeData);
                 }
-                // 每次收到新 token，重新渲染整段 Markdown（实时富文本效果）
+
+                // 每次收到新数据，重新渲染整段 Markdown（实时富文本效果）
                 bubbleEl.innerHTML = renderMarkdown(fullText);
                 scrollToBottom();
             }
