@@ -127,7 +127,7 @@ class MockPaymentDatabase:
             
             # 模拟支付结果（80%成功，20%失败）
             import random
-            success = random.random() < 0.8
+            success = random.random() < 1
             
             if success:
                 status = PaymentStatus.SUCCESS

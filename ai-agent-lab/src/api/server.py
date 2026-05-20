@@ -14,6 +14,7 @@
 - 数据模型（models/）：Pydantic 数据模型
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -74,7 +75,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️ MCP 管理器初始化失败，功能可能不可用")
     except Exception as e:
-        logger.warning(f"MCP 管理器初始化失败: {e}")
+        logger.warning(f"MCP 管理器初始化失败：{e}")
         logger.warning("MCP 功能可能不可用，但服务将继续运行")
 
     # 【生产实践】初始化领域专家系统（加载知识库）
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
         await initialize_experts()
         logger.info("✅ 领域专家系统初始化成功")
     except Exception as e:
-        logger.warning(f"领域专家系统初始化失败: {e}")
+        logger.warning(f"领域专家系统初始化失败：{e}")
         logger.warning("专家功能可能不可用，但服务将继续运行")
 
     # 【生产实践】启动知识库文件监听服务
@@ -96,15 +97,15 @@ async def lifespan(app: FastAPI):
         start_all_file_watchers()
         logger.info("知识库文件监听服务已启动")
     except Exception as e:
-        logger.warning(f"文件监听服务启动失败: {e}")
+        logger.warning(f"文件监听服务启动失败：{e}")
         logger.warning("文件监听功能不可用，知识库更新需要手动触发")
 
     logger.info("Agent API 启动成功。")
     logger.info("=" * 60)
     logger.info("服务已就绪，可通过以下地址访问:")
-    logger.info("  - API 文档: http://localhost:8000/docs")
-    logger.info("  - 健康检查: http://localhost:8000/health")
-    logger.info("  - MCP 状态: http://localhost:8000/v1/tools/mcp/status")
+    logger.info("  - API 文档：http://localhost:8000/docs")
+    logger.info("  - 健康检查：http://localhost:8000/health")
+    logger.info("  - MCP 状态：http://localhost:8000/v1/tools/mcp/status")
     logger.info("=" * 60)
 
     # 检查 Prometheus 是否可用
@@ -113,6 +114,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Prometheus 监控未启用，请安装 prometheus-client")
 
+    # 【进阶方案】启动 Agent 预热任务（异步执行，不阻塞启动）
+    # 预热机制可以在服务启动后后台创建 Agent 实例，提升首次请求响应速度
+    logger.info("🚀 启动 Agent 预热任务...")
+    
+    asyncio.create_task(warm_up_agent())
+
+    # ============================================================
+    # 关键：lifespan 上下文管理器的分界点
+    # ============================================================
+    # yield 之前的代码：应用启动时执行（初始化阶段）
+    # yield 本身：暂停 lifespan，将控制权交给 FastAPI 主程序
+    # yield 之后的代码：应用关闭时执行（清理阶段）
+    #
+    # 【重要】不要删除或移动这行 yield！
+    # - 它是 asynccontextmanager 的核心，区分启动和关闭逻辑
+    # - 它确保资源在应用运行期间保持可用
+    # - 它保证关闭时的清理代码一定会执行
+    # ============================================================
     yield
 
     # 【生产实践】优雅关闭 — 释放所有资源
@@ -125,7 +144,7 @@ async def lifespan(app: FastAPI):
         stop_all_file_watchers()
         logger.info("知识库文件监听服务已停止")
     except Exception as e:
-        logger.warning(f"停止文件监听服务失败: {e}")
+        logger.warning(f"停止文件监听服务失败：{e}")
 
     # 2. 关闭 MCP 管理器
     try:
@@ -134,7 +153,7 @@ async def lifespan(app: FastAPI):
         await close_mcp_manager()
         logger.info("MCP 管理器已关闭")
     except Exception as e:
-        logger.warning(f"关闭 MCP 管理器失败: {e}")
+        logger.warning(f"关闭 MCP 管理器失败：{e}")
 
     # 3. 关闭内存池
     try:
@@ -143,10 +162,59 @@ async def lifespan(app: FastAPI):
         await close_async_pool()
         logger.info("记忆服务已关闭")
     except Exception as e:
-        logger.warning(f"关闭记忆服务失败: {e}")
+        logger.warning(f"关闭记忆服务失败：{e}")
 
     logger.info("Agent API 已关闭")
 
+
+# ============================================================
+# Agent 预热机制（简化版）
+# ============================================================
+async def warm_up_agent():
+    """
+    Agent 预热任务 - 在服务启动后异步创建 Agent 实例
+    
+    【设计原理】：
+    1. 延迟 1 秒启动，让其他初始化任务先完成
+    2. 异步执行，不阻塞服务启动
+    3. 只预热 Agent 实例，其依赖组件会自动初始化
+    
+    【为什么只预热 Agent？】
+    - Agent 构建时会自动触发依赖组件的初始化
+    - 所有依赖组件都使用了单例缓存模式
+    - 避免重复初始化和过度预热
+    
+    【依赖链】
+    Agent → 领域专家 → RAG 引擎 → Embedding 模型
+          → LLM 模型
+          → Memory Manager
+          → Tool Manager
+    """
+    start_time = datetime.now()
+    
+    # 延迟 1 秒启动，避免与其他初始化任务竞争资源
+    await asyncio.sleep(1)
+    
+    try:
+        logger.info("  └─ 开始预热 Agent 实例（含依赖组件）...")
+        
+        # 导入并调用 get_async_agent 创建实例
+        # 这会触发所有依赖组件的初始化（Embedding、LLM、Memory、Tools 等）
+        from src.agents.workflow import get_async_agent
+        await get_async_agent()
+        
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        
+        logger.info(f"✅ Agent 预热完成！耗时：{duration:.2f} 秒")
+        logger.info(f"   依赖组件已同步初始化：Embedding、LLM、Memory、Tools")
+        
+    except Exception as e:
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.warning(f"⚠️ Agent 预热失败：{str(e)}")
+        logger.warning(f"   预热耗时：{duration:.2f} 秒")
+        logger.warning(f"   首次请求时将自动重试创建 Agent 实例")
 
 # ============================================================
 # 应用创建
@@ -202,10 +270,28 @@ async def get_llm_stats():
         stats = get_call_stats()
         return stats
     except Exception as e:
-        logger.error(f"获取LLM统计失败: {e}")
+        logger.error(f"获取 LLM 统计失败：{e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ┌─────────────────────────────────────────┐
+# │         Python 进程 (主进程)             │
+# │  ┌───────────────────────────────────┐  │
+# │  │   Uvicorn 服务器                   │  │
+# │  │  ┌─────────────────────────────┐  │  │
+# │  │  │  Event Loop (事件循环)       │  │  │
+# │  │  │  ┌───────────────────────┐  │  │  │
+# │  │  │  │  预热任务 (后台)        │  │  │  │
+# │  │  │  ├───────────────────────┤  │  │  │
+# │  │  │  │  请求 1 (用户对话)      │  │  │  │
+# │  │  │  ├───────────────────────┤  │  │  │
+# │  │  │  │  请求 2 (用户对话)      │  │  │  │
+# │  │  │  ├───────────────────────┤  │  │  │
+# │  │  │  │  请求 3 (新建会话)      │  │  │  │
+# │  │  │  └───────────────────────┘  │  │  │
+# │  │  └─────────────────────────────┘  │  │
+# │  └───────────────────────────────────┘  │
+# └─────────────────────────────────────────┘
 # ============================================================
 # 主程序入口
 # ============================================================
