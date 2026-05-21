@@ -20,10 +20,8 @@ from src.tools import (
     close_mcp_manager,
     is_mcp_available,
     get_all_tools,
-    get_mcp_tools,
-    get_api_tools,
-    get_local_tools,
     call_tool,
+    tool_api,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,13 +135,7 @@ class ToolService:
             raise ValueError(f"未知的工具类型: {tool_type}")
 
         try:
-            if tool_type == "mcp":
-                tools = await get_mcp_tools()
-            elif tool_type == "api":
-                tools = await get_api_tools()
-            elif tool_type == "local":
-                tools = await get_local_tools()
-            
+            tools = tool_api.get_tools_by_category(tool_type)
             return [{"name": t.name, "description": t.description} for t in tools]
         except Exception as e:
             logger.error(f"获取{tool_type}工具列表失败: {e}")

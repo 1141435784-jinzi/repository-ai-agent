@@ -51,7 +51,7 @@ from src.agents.experts import (
     agent_manager, get_agent_tech_expert, get_plan_expert,
     get_sights_expert, get_food_expert, get_transport_expert
 )
-from src.tools.tool_manager import tool_manager
+from src.tools import tool_api
 from src.utils.logger import WorkflowLogger
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ async def _build_agent_response(
         )
         prompt_msgs.insert(1, task_msg)
 
-        tools = await tool_manager.get_tools()
+        tools = tool_api.to_langchain_tools()
 
         llm = get_llm(provider=user_model, streaming=True)
         workflow_logger.llm_call(thread_id, user_model or "default",
@@ -496,7 +496,7 @@ async def unified_tool_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("tools", thread_id)
 
     try:
-        tools = await tool_manager.get_tools()
+        tools = tool_api.to_langchain_tools()
         if not tools:
             logger.warning(f"[{thread_id[:8]}] 没有可用的工具")
             return {"tool_error": "没有可用的工具"}

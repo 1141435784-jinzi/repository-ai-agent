@@ -1,0 +1,8 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "env": ".env",
+  "graphs": {
+    "my-agent": "./src/agents/workflow.py:build_async_agent_graph"
+  }
+}

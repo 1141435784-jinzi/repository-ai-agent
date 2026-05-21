@@ -46,15 +46,44 @@ from .workflow import (
 )
 
 # ============================================================
-# 工具管理器
+# 工具管理器（新架构）
 # ============================================================
-from src.tools.tool_manager import (
-    DynamicToolManager,
-    tool_manager,
-    get_tool_system_stats,
-    refresh_tool_system,
-    get_tool_info,
+from src.tools import (
+    tool_api,
+    tool_registry,
+    tool_executor,
+    call_tool,
+    get_all_tools,
+    to_langchain_tools,
 )
+
+
+async def get_tool_system_stats() -> dict:
+    """获取工具系统统计信息"""
+    tools = tool_api.get_tools()
+    return {
+        "total_tools": len(tools),
+        "tool_details": [
+            {"name": t.name, "description": t.description[:50]}
+            for t in tools
+        ]
+    }
+
+
+async def refresh_tool_system() -> dict:
+    """刷新工具系统"""
+    from src.tools import refresh_mcp_tools
+    await refresh_mcp_tools()
+    return {
+        "success": True,
+        "message": "工具系统已刷新"
+    }
+
+
+async def get_tool_info(tool_name: str) -> dict:
+    """获取工具信息"""
+    from src.tools import get_tool_info as _get_tool_info
+    return _get_tool_info(tool_name)
 
 # ============================================================
 # 专业领域 Agent
@@ -118,9 +147,13 @@ __all__ = [
     "get_async_agent",
     "initialize_experts",
     
-    # 工具管理器
-    "DynamicToolManager",
-    "tool_manager",
+    # 工具管理器（新架构）
+    "tool_api",
+    "tool_registry",
+    "tool_executor",
+    "call_tool",
+    "get_all_tools",
+    "to_langchain_tools",
     
     # 工具管理 API
     "get_tool_system_stats",

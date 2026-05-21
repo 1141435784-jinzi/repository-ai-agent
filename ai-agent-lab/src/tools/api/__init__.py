@@ -1,284 +1,172 @@
 """
-=== API 工具模块 ===
+=== 工具开放接口层 ===
+
+为 Agent 提供统一的工具访问接口，简化工具调用流程。
 
 【功能】：
-1. 封装 RESTful API 为 LangChain 工具
-2. 支持认证、请求重试、错误处理
-3. 提供统一的 API 工具接口
-4. 提供简单好用的免费 API 工具示例
+1. 统一的工具获取接口
+2. 统一的工具调用接口
+3. LangChain 工具转换
+4. 批量工具执行
+5. 工具信息查询
 
 【设计原则】：
-1. 简单易用：参数简单，返回结果清晰
-2. 完全免费：无需 API key 或使用免费 tier
-3. 类型安全：使用 Pydantic 模型验证参数
-4. 错误处理：友好的错误提示
-
-【使用方式】：
-```python
-from src.tools.api import get_api_tools, call_api_tool
-
-# 获取所有 API 工具
-tools = await get_api_tools()
-
-# 调用特定 API 工具
-result = await call_api_tool("api_ip_info")
-result = await call_api_tool("api_exchange_rate", base_currency="USD", target_currency="CNY", amount=100)
-result = await call_api_tool("api_random_quote", limit=3)
-```
-
-【包含的免费 API 工具】：
-1. IP 信息查询 (ipapi.co) - 无需 API key
-2. 汇率查询 (exchangerate-api.com) - 无需 API key
-3. 随机名言 (quotable.io) - 无需 API key
-4. 公共 API 列表 (public-apis) - 无需 API key
-5. 占位符图片 (placeholder.com) - 无需 API key
+1. 简化接口：提供最简单的调用方式
+2. 兼容性：支持多种 Agent 框架
+3. 类型安全：使用 Pydantic 模型
+4. 易用性：提供直观的 API
 """
 
-import asyncio
-from typing import List, Dict, Any, Optional
-from langchain_core.tools import BaseTool
+from typing import List, Dict, Any, Optional, Type
+from langchain_core.tools import BaseTool as LangChainBaseTool, StructuredTool
+from pydantic import BaseModel, Field
 
-from .free_apis import create_free_api_tools
-from .payment_api import (
-    create_payment,
-    process_payment,
-    query_payment,
-    refund_payment,
-    get_payment_methods,
-    CreatePaymentInput,
-    ProcessPaymentInput,
-    QueryPaymentInput,
-    RefundPaymentInput,
-    PaymentMethod,
-    PaymentStatus
-)
-
-from langchain_core.tools import StructuredTool
+from src.tools.base import BaseTool, ToolMetadata
+from src.tools.registry import tool_registry
+from src.tools.executor import tool_executor, ExecutionResult
 
 
-def create_payment_tools() -> List[BaseTool]:
-    """创建支付 API 工具列表"""
-    
-    # 创建包装函数
-    async def wrapped_create_payment(**kwargs):
-        return await create_payment(**kwargs)
-    
-    async def wrapped_process_payment(**kwargs):
-        return await process_payment(**kwargs)
-    
-    async def wrapped_query_payment(**kwargs):
-        return await query_payment(**kwargs)
-    
-    async def wrapped_refund_payment(**kwargs):
-        return await refund_payment(**kwargs)
-    
-    async def wrapped_get_payment_methods(**kwargs):
-        return await get_payment_methods(**kwargs)
-    
-    tools = [
-        # 1. 创建支付订单
-        StructuredTool.from_function(
-            name="api_create_payment",
-            func=wrapped_create_payment,
-            description="创建支付订单（支持微信和支付宝）。此为模拟支付，不进行真实支付操作。",
-            args_schema=CreatePaymentInput,
-            coroutine=wrapped_create_payment
-        ),
-        
-        # 2. 处理支付
-        StructuredTool.from_function(
-            name="api_process_payment",
-            func=wrapped_process_payment,
-            description="处理支付订单（模拟支付流程）。模拟支付成功或失败。",
-            args_schema=ProcessPaymentInput,
-            coroutine=wrapped_process_payment
-        ),
-        
-        # 3. 查询支付状态
-        StructuredTool.from_function(
-            name="api_query_payment",
-            func=wrapped_query_payment,
-            description="查询支付订单状态。包括支付状态、金额、支付时间等信息。",
-            args_schema=QueryPaymentInput,
-            coroutine=wrapped_query_payment
-        ),
-        
-        # 4. 退款
-        StructuredTool.from_function(
-            name="api_refund_payment",
-            func=wrapped_refund_payment,
-            description="退款操作（模拟退款流程）。只有支付成功的订单才能退款。",
-            args_schema=RefundPaymentInput,
-            coroutine=wrapped_refund_payment
-        ),
-        
-        # 5. 获取支付方式
-        StructuredTool.from_function(
-            name="api_get_payment_methods",
-            func=wrapped_get_payment_methods,
-            description="获取支持的支付方式列表。包括微信支付和支付宝的详细信息。",
-            args_schema=None,  # 这个工具不需要参数
-            coroutine=wrapped_get_payment_methods
-        ),
-    ]
-    
-    return tools
+class ToolInfo(BaseModel):
+    """工具信息模型"""
+    name: str = Field(description="工具名称")
+    description: str = Field(description="工具描述")
+    category: str = Field(description="工具类别")
+    tags: List[str] = Field(default_factory=list, description="工具标签")
+    rate_limit: int = Field(default=10, description="限流限制")
+    timeout: int = Field(default=30, description="超时时间")
 
 
-def create_all_api_tools() -> List[BaseTool]:
-    """创建所有 API 工具（包括免费工具和支付工具）"""
-    free_tools = create_free_api_tools()
-    payment_tools = create_payment_tools()
-    
-    all_tools = free_tools + payment_tools
-    print(f"📦 创建了 {len(free_tools)} 个免费工具 + {len(payment_tools)} 个支付工具 = {len(all_tools)} 个 API 工具")
-    
-    return all_tools
-
-
-# API 工具注册表
-_api_tools: Optional[List[BaseTool]] = None
-
-async def get_api_tools() -> List[BaseTool]:
-    """获取所有 API 工具
-    
-    Returns:
-        List[BaseTool]: API 工具列表
+class ToolAPI:
     """
-    global _api_tools
-    if _api_tools is None:
-        _api_tools = create_all_api_tools()
-        print(f"🔄 加载了 {len(_api_tools)} 个 API 工具")
-    return _api_tools
-
-async def call_api_tool(tool_name: str, **kwargs) -> Any:
-    """调用 API 工具
+    工具开放接口
     
-    Args:
-        tool_name: 工具名称，格式为 "api_工具名"
-        **kwargs: 工具参数
+    为 Agent 提供统一的工具访问入口
+    """
+    
+    def get_tools(self) -> List[Type[BaseTool]]:
+        """获取所有注册的工具类"""
+        return tool_registry.get_all_tools()
+    
+    def get_tool_instances(self) -> List[BaseTool]:
+        """获取所有工具实例"""
+        return tool_registry.get_all_tool_instances()
+    
+    def get_tool_info(self, tool_name: str) -> Optional[ToolInfo]:
+        """获取工具信息"""
+        tool_class = tool_registry.get_tool(tool_name)
+        if tool_class:
+            metadata = tool_class.metadata
+            return ToolInfo(
+                name=tool_class.name,
+                description=tool_class.description,
+                category=metadata.category,
+                tags=metadata.tags,
+                rate_limit=metadata.rate_limit,
+                timeout=metadata.timeout
+            )
+        return None
+    
+    def get_all_tool_info(self) -> List[ToolInfo]:
+        """获取所有工具信息"""
+        infos = []
+        for tool_class in tool_registry.get_all_tools():
+            metadata = tool_class.metadata
+            infos.append(ToolInfo(
+                name=tool_class.name,
+                description=tool_class.description,
+                category=metadata.category,
+                tags=metadata.tags,
+                rate_limit=metadata.rate_limit,
+                timeout=metadata.timeout
+            ))
+        return infos
+    
+    async def call_tool(self, tool_name: str, **kwargs) -> ExecutionResult:
+        """调用工具"""
+        return await tool_executor.execute(tool_name, **kwargs)
+    
+    async def batch_call_tools(self, tool_calls: List[Dict[str, Any]]) -> List[ExecutionResult]:
+        """批量调用工具"""
+        tasks = []
+        for call in tool_calls:
+            tool_name = call.get("tool_name")
+            params = call.get("params", {})
+            tasks.append(tool_executor.execute(tool_name, **params))
         
-    Returns:
-        Any: 工具执行结果
-    """
-    tools = await get_api_tools()
+        return await asyncio.gather(*tasks)
     
-    # 查找工具
-    for tool in tools:
-        if tool.name == tool_name:
-            try:
-                # 异步执行工具
-                result = await tool.ainvoke(kwargs)
-                return result
-            except Exception as e:
-                return {
-                    "error": True,
-                    "message": f"工具执行失败: {str(e)}",
-                    "tool_name": tool_name
-                }
-    
-    return {
-        "error": True,
-        "message": f"API 工具未找到: {tool_name}",
-        "available_tools": [t.name for t in tools]
-    }
-
-async def get_api_tool_info(tool_name: str) -> Dict[str, Any]:
-    """获取 API 工具详细信息
-    
-    Args:
-        tool_name: 工具名称
+    def to_langchain_tools(self) -> List[LangChainBaseTool]:
+        """转换为 LangChain 工具格式"""
+        langchain_tools = []
         
-    Returns:
-        Dict[str, Any]: 工具信息
-    """
-    tools = await get_api_tools()
-    
-    for tool in tools:
-        if tool.name == tool_name:
-            return {
-                "name": tool.name,
-                "description": tool.description,
-                "args_schema": str(tool.args_schema) if hasattr(tool, 'args_schema') else None,
-                "is_free": True,
-                "requires_api_key": False
-            }
-    
-    return {
-        "error": True,
-        "message": f"API 工具未找到: {tool_name}"
-    }
-
-async def test_all_api_tools() -> Dict[str, Any]:
-    """测试所有 API 工具
-    
-    Returns:
-        Dict[str, Any]: 测试结果
-    """
-    tools = await get_api_tools()
-    results = {}
-    
-    for tool in tools:
-        try:
-            # 使用默认参数测试每个工具
-            if tool.name == "api_ip_info":
-                result = await tool.ainvoke({})
-            elif tool.name == "api_exchange_rate":
-                result = await tool.ainvoke({"base_currency": "USD", "target_currency": "CNY", "amount": 1})
-            elif tool.name == "api_random_quote":
-                result = await tool.ainvoke({"limit": 1})
-            elif tool.name == "api_public_apis":
-                result = await tool.ainvoke({"limit": 2})
-            elif tool.name == "api_weather_cn":
-                result = await tool.ainvoke({"city": "北京"})
-            elif tool.name == "api_placeholder_image":
-                result = await tool.ainvoke({"width": 100, "height": 100, "text": "test"})
-            else:
-                result = {"status": "skipped", "reason": "no test parameters"}
+        for tool_class in tool_registry.get_all_tools():
+            # 创建工具实例
+            tool_instance = tool_class()
             
-            results[tool.name] = {
-                "success": "error" not in result or not result["error"],
-                "result": result if isinstance(result, dict) else str(result)[:100] + "..."
-            }
-        except Exception as e:
-            results[tool.name] = {
-                "success": False,
-                "error": str(e)
-            }
+            # 获取输入输出模型
+            input_model = tool_class.input_schema
+            output_model = tool_class.output_schema
+            
+            # 创建包装函数
+            async def _wrapped_call(tool_instance=tool_instance, **kwargs):
+                result = await tool_instance.execute(**kwargs)
+                if hasattr(result, 'model_dump'):
+                    return result.model_dump()
+                return result
+            
+            # 创建 StructuredTool
+            langchain_tool = StructuredTool.from_function(
+                name=tool_class.name,
+                func=_wrapped_call,
+                description=tool_class.description,
+                args_schema=input_model,
+                coroutine=_wrapped_call
+            )
+            
+            langchain_tools.append(langchain_tool)
+        
+        return langchain_tools
     
-    return {
-        "total_tools": len(tools),
-        "tested_tools": len(results),
-        "successful_tests": sum(1 for r in results.values() if r.get("success", False)),
-        "results": results
-    }
+    def get_tools_by_category(self, category: str) -> List[Type[BaseTool]]:
+        """按类别获取工具"""
+        return tool_registry.get_tools_by_category(category)
+    
+    def search_tools(self, keyword: str) -> List[Type[BaseTool]]:
+        """搜索工具"""
+        return tool_registry.search_tools(keyword)
 
 
-# 导出列表
+# 全局工具 API 实例
+tool_api = ToolAPI()
+
+
+# ==================== 便捷函数 ====================
+
+def get_all_tools() -> List[Type[BaseTool]]:
+    """获取所有工具类（便捷函数）"""
+    return tool_api.get_tools()
+
+
+def get_tool_info(tool_name: str) -> Optional[ToolInfo]:
+    """获取工具信息（便捷函数）"""
+    return tool_api.get_tool_info(tool_name)
+
+
+def to_langchain_tools() -> List[LangChainBaseTool]:
+    """转换为 LangChain 工具（便捷函数）"""
+    return tool_api.to_langchain_tools()
+
+
+# 导入 asyncio 用于异步调用
+import asyncio
+
+# ==================== 导出列表 ====================
+
 __all__ = [
-    # 主接口
-    "get_api_tools",
-    "call_api_tool",
-    "get_api_tool_info",
-    "test_all_api_tools",
-    
-    # 工具创建函数
-    "create_free_api_tools",
-    "create_payment_tools",
-    "create_all_api_tools",
-    
-    # 支付工具函数
-    "create_payment",
-    "process_payment",
-    "query_payment",
-    "refund_payment",
-    "get_payment_methods",
-    
-    # 支付类型定义
-    "CreatePaymentInput",
-    "ProcessPaymentInput",
-    "QueryPaymentInput",
-    "RefundPaymentInput",
-    "PaymentMethod",
-    "PaymentStatus",
+    "ToolAPI",
+    "tool_api",
+    "ToolInfo",
+    "get_all_tools",
+    "get_tool_info",
+    "to_langchain_tools",
 ]
