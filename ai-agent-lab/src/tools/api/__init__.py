@@ -96,9 +96,10 @@ class ToolAPI:
         return await asyncio.gather(*tasks)
     
     def to_langchain_tools(self) -> List[LangChainBaseTool]:
-        """转换为 LangChain 工具格式"""
+        """转换为 LangChain 工具格式（包含注册工具和 MCP 工具）"""
         langchain_tools = []
         
+        # 1. 添加注册到 tool_registry 的工具
         for tool_class in tool_registry.get_all_tools():
             # 创建工具实例
             tool_instance = tool_class()
@@ -124,6 +125,16 @@ class ToolAPI:
             )
             
             langchain_tools.append(langchain_tool)
+        
+        # 2. 添加 MCP 工具（动态发现）
+        try:
+            from src.tools.mcp import get_langchain_tools_from_mcp
+            import asyncio
+            mcp_tools = asyncio.run(get_langchain_tools_from_mcp())
+            langchain_tools.extend(mcp_tools)
+        except Exception as e:
+            # MCP 未配置或未安装时跳过
+            pass
         
         return langchain_tools
     
