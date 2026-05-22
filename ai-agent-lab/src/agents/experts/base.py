@@ -34,6 +34,7 @@ from src.agents.middleware import (
     HITLMiddleware
 )
 from src.rag.rag_tool import RAGTool, create_rag_tool
+from src.tools import tool_api
 
 
 class DomainExpertAgent(ABC):
@@ -158,6 +159,13 @@ class DomainExpertAgent(ABC):
             HITLMiddleware(enabled=False)
         ]
 
+        # 获取通用工具并添加到专家的工具列表中
+        # 通用工具包括：计算器、天气、汇率、票务预订等
+        common_tools = tool_api.to_langchain_tools()
+        if common_tools:
+            self._tools.extend(common_tools)
+            print(f"🔧 {self.name} 已加载 {len(common_tools)} 个通用工具")
+
         # 使用 create_agent 创建Agent
         self._inner_agent = create_agent(
             model=get_llm(streaming=True),
@@ -211,10 +219,34 @@ class DomainExpertAgent(ABC):
         # 重置成本控制计数器
         self._cost_control.reset()
 
-        # 调用内部Agent
-        result = self._inner_agent.invoke({
-            "messages": [HumanMessage(content=query)]
-        })
+        try:
+            # 调用内部Agent
+            result = self._inner_agent.invoke({
+                "messages": [HumanMessage(content=query)]
+            })
+        except Exception as e:
+            # 处理 GraphInterrupt 异常（当设置了 interrupt_before=["tools"] 时会触发）
+            from langgraph.errors import GraphInterrupt
+            
+            if isinstance(e, GraphInterrupt):
+                # 中断发生时，返回需要工具执行的状态
+                print(f"⚠️ {self.name} 需要执行工具调用，返回中断状态")
+                return {
+                    "response": "",
+                    "agent_type": self.name,
+                    "needs_tool_execution": True,
+                    "tool_calls": [],
+                    "sources": [],
+                    "found_in_kb": False,
+                    "metadata": {
+                        "expertise_level": "expert",
+                        "interrupted": True,
+                        **self.domain_metadata
+                    }
+                }
+            else:
+                # 其他异常重新抛出
+                raise
 
         # 提取响应
         response_content = ""

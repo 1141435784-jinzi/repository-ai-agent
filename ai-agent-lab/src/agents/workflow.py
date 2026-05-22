@@ -34,10 +34,7 @@ from typing_extensions import TypedDict
 from src.config import MAX_ITERATIONS
 from src.memory import get_async_checkpointer, get_memory_manager
 from src.llm.gateway import get_llm
-from src.prompts import (
-    AGENT_PROMPT, SUPERVISOR_PROMPT, PLAN_PROMPT,
-    SIGHTS_PROMPT, FOOD_PROMPT, TRANSPORT_PROMPT
-)
+from src.prompts import SUPERVISOR_PROMPT
 from src.agents.experts import (
     agent_manager, get_agent_tech_expert, get_plan_expert,
     get_sights_expert, get_food_expert, get_transport_expert
@@ -365,39 +362,59 @@ def _build_prompt_with_memory(state: AgentState, prompt_template, messages: list
 async def _build_agent_response(
     state: AgentState,
     config: RunnableConfig,
-    prompt_template
+    agent_name: str
 ) -> dict:
-    """构建 Agent 响应（支持工具调用）"""
+    """构建 Agent 响应（支持工具调用）- 通过调用专家 Agent 的 process() 方法"""
+    from langchain_core.messages import AIMessage
+
     thread_id = config["configurable"].get("thread_id", "default")
-    user_model = config["configurable"].get("model", "")
 
     workflow_logger.node_enter("agent_response", thread_id)
 
     try:
+        # 获取用户查询
         cleaned_msgs = state["messages"]
+        if not cleaned_msgs:
+            return {"messages": [AIMessage(content="未收到用户消息")]}
+        
+        user_query = str(cleaned_msgs[-1].content) if hasattr(cleaned_msgs[-1], 'content') else str(cleaned_msgs[-1])
+
+        # 获取当前任务
         plan = state.get("execution_plan", [])
         current_task = next((t["task"] for t in plan if t["status"] == "in_progress"), "处理用户请求")
 
-        prompt_msgs = _build_prompt_with_memory(state, prompt_template, cleaned_msgs)
+        # 获取对应的专家 Agent 实例
+        expert = agent_manager.get_agent(agent_name)
+        if not expert:
+            logger.warning(f"未找到专家 Agent: {agent_name}")
+            return {"messages": [AIMessage(content=f"未找到专家: {agent_name}")]}
 
-        task_msg = SystemMessage(
-            content=f"【当前任务】：{current_task}\n请针对此任务进行回答或执行工具调用。"
+        # 调用专家的 process() 方法
+        result = await expert.process(
+            query=user_query,
+            config=config,
+            context={
+                "execution_plan": plan,
+                "current_task": current_task
+            }
         )
-        prompt_msgs.insert(1, task_msg)
 
-        tools = tool_api.to_langchain_tools()
-        llm = get_llm(provider=user_model, streaming=True)
-
-        llm_with_tools = llm.bind_tools(tools) if tools else llm
-        resp = await llm_with_tools.ainvoke(prompt_msgs)
-
-        has_tool_calls = hasattr(resp, 'tool_calls') and resp.tool_calls
-        if has_tool_calls:
-            for tc in (resp.tool_calls if isinstance(resp.tool_calls, list) else [resp.tool_calls]):
+        # 处理工具调用
+        if result.get("needs_tool_execution") and result.get("tool_calls"):
+            for tc in result["tool_calls"]:
                 tc_name = tc.get("name", "unknown") if isinstance(tc, dict) else str(tc)
                 workflow_logger.tool_execution(thread_id, tc_name, tc.get("args", {}) if isinstance(tc, dict) else {})
 
-        workflow_logger.node_exit("agent_response", thread_id, f"响应长度: {len(resp.content) if resp.content else 0}")
+        # 构建响应消息
+        response_content = result.get("response", "")
+        tool_calls = result.get("tool_calls", [])
+        
+        # 创建带工具调用的响应消息
+        resp = AIMessage(content=response_content)
+        if tool_calls:
+            resp.tool_calls = tool_calls
+
+        workflow_logger.node_exit("agent_response", thread_id, f"响应长度: {len(response_content)}")
         return {"messages": [resp]}
 
     except Exception as e:
@@ -405,7 +422,7 @@ async def _build_agent_response(
         return {"messages": [AIMessage(content=f"服务异常，请稍后重试：{str(e)[:150]}")]}
 
 
-def create_expert_node(agent_name: str, prompt_template) -> callable:
+def create_expert_node(agent_name: str) -> callable:
     """创建专家节点工厂函数"""
     async def expert_node(state: AgentState, config: RunnableConfig) -> dict:
         thread_id = config.get("configurable", {}).get("thread_id", "default")
@@ -442,7 +459,8 @@ def create_expert_node(agent_name: str, prompt_template) -> callable:
             else:
                 new_plan.append(t)
 
-        result = await _build_agent_response(state, config, prompt_template)
+        # 调用专家的 process() 方法获取响应
+        result = await _build_agent_response(state, config, agent_name)
         workflow_logger.node_exit(agent_name, thread_id, "响应生成完成")
         
         # 如果有错误，传递错误信息
@@ -456,11 +474,11 @@ def create_expert_node(agent_name: str, prompt_template) -> callable:
 
 
 # 创建专家节点（agent_tech 作为默认专家）
-agent_tech_node = create_expert_node("agent_tech", AGENT_PROMPT)
-plan_node = create_expert_node("plan", PLAN_PROMPT)
-food_agent_node = create_expert_node("food", FOOD_PROMPT)
-sights_agent_node = create_expert_node("sights", SIGHTS_PROMPT)
-transport_agent_node = create_expert_node("transport", TRANSPORT_PROMPT)
+agent_tech_node = create_expert_node("agent_tech")
+plan_node = create_expert_node("plan")
+food_agent_node = create_expert_node("food")
+sights_agent_node = create_expert_node("sights")
+transport_agent_node = create_expert_node("transport")
 
 
 # ============================================================
@@ -655,10 +673,10 @@ async def get_async_agent(graph_id: str = "default"):
     if graph_id == "default":
         async with _agent_lock:
             if _async_agent is None:
-                _async_agent = await build_async_agent_graph(graph_id)
+                _async_agent = await build_async_agent_graph()
         return _async_agent
 
-    return await build_async_agent_graph(graph_id)
+    return await build_async_agent_graph()
 
 
 def clear_graph_cache(graph_id: str = None):
