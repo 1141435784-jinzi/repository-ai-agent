@@ -84,7 +84,12 @@ class ChatService:
                 
                 # 使用 ainvoke 获取完整响应，然后分块发送模拟流式输出
                 result = await agent_executor.ainvoke(
-                    {"messages": [("user", message)]},
+                    {
+                        "messages": [("user", message)],
+                        "execution_plan": [],
+                        "iteration_count": 0,
+                        "task_errors": []
+                    },
                     config=config
                 )
                 

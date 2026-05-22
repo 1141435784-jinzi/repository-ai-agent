@@ -196,7 +196,7 @@ async def warm_up_agent():
     await asyncio.sleep(1)
     
     try:
-        logger.info("  └─ 开始预热 Agent 实例（含依赖组件）...")
+        logger.info("  └─ 开始预热 执行图 实例（含依赖组件）...")
         
         # 导入并调用 get_async_agent 创建实例
         # 这会触发所有依赖组件的初始化（Embedding、LLM、Memory、Tools 等）
@@ -206,15 +206,14 @@ async def warm_up_agent():
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        logger.info(f"✅ Agent 预热完成！耗时：{duration:.2f} 秒")
-        logger.info(f"   依赖组件已同步初始化：Embedding、LLM、Memory、Tools")
+        logger.info(f"✅ 执行图 预热完成！耗时：{duration:.2f} 秒")
         
     except Exception as e:
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
-        logger.warning(f"⚠️ Agent 预热失败：{str(e)}")
+        logger.warning(f"⚠️ 执行图 预热失败：{str(e)}")
         logger.warning(f"   预热耗时：{duration:.2f} 秒")
-        logger.warning(f"   首次请求时将自动重试创建 Agent 实例")
+        logger.warning(f"   首次请求时将自动重试创建 执行图 实例")
 
 # ============================================================
 # 应用创建

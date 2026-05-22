@@ -1,5 +1,5 @@
 """
-=== Agent 基类与接口 (LangChain 1.x 重构版 - RAG作为工具) ===
+=== Agent 基类与接口 (LangChain 1.x 重构版) ===
 
 【职责】：
 1. 定义领域专家Agent基类（基于 create_agent）
@@ -162,9 +162,9 @@ class DomainExpertAgent(ABC):
         self._inner_agent = create_agent(
             model=get_llm(streaming=True),
             tools=self._tools,
-            prompt=system_prompt,
+            system_prompt=system_prompt,
             middleware=middlewares,
-            interrupt_before=["tools"],  # 支持Human-in-the-Loop
+            interrupt_before=["tools"],
         )
 
     def _build_system_prompt(self) -> str:
