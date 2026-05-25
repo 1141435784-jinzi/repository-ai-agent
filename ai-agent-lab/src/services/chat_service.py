@@ -95,20 +95,24 @@ class ChatService:
                     },
                     config=config
                 ):
-                    # 从 chunk 中提取内容
-                    if isinstance(chunk, dict) and "messages" in chunk:
-                        messages = chunk["messages"]
-                        if messages:
-                            last_message = messages[-1]
-                            if hasattr(last_message, 'content') and last_message.content:
-                                # 提取新增的内容部分（增量输出）
-                                content = last_message.content
-                                delta = content[len(full_content):]
-                                if delta:
-                                    full_content = content
-                                    # 转义特殊字符，避免干扰 SSE 协议解析
-                                    escaped_delta = delta.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
-                                    yield f"data: {escaped_delta}\n\n"
+                    # langgraph astream 返回的格式是 {节点名: {状态}}
+                    # 需要遍历所有节点的输出
+                    messages = []
+                    for node_output in chunk.values():
+                        if isinstance(node_output, dict) and "messages" in node_output:
+                            messages.extend(node_output["messages"])
+                    
+                    if messages:
+                        last_message = messages[-1]
+                        if hasattr(last_message, 'content') and last_message.content:
+                            # 提取新增的内容部分（增量输出）
+                            content = last_message.content
+                            delta = content[len(full_content):]
+                            if delta:
+                                full_content = content
+                                # 转义特殊字符，避免干扰 SSE 协议解析
+                                escaped_delta = delta.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+                                yield f"data: {escaped_delta}\n\n"
                 
                 # ========== 日志：记录最终回答 ==========
                 end_time = datetime.now()

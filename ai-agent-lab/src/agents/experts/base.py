@@ -19,7 +19,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_core.callbacks import CallbackManagerForToolRun
@@ -166,14 +166,6 @@ class DomainExpertAgent(ABC):
             self._tools.extend(common_tools)
             tool_names = ", ".join([t.name for t in common_tools])
             print(f"🔧 {self.name} 已加载 {len(common_tools)} 个通用工具: {tool_names}")
-            # 输出工具完整信息用于调试
-            for i, tool in enumerate(self._tools):
-                print(f"   [{i+1}] {tool.name}: {tool.description[:50]}...")
-                print(f"       类型: {type(tool).__name__}")
-                if hasattr(tool, 'args_schema') and tool.args_schema is not None:
-                    print(f"       参数: {tool.args_schema.__fields__.keys()}")
-                else:
-                    print(f"       参数: None")
 
         # 使用 create_agent 创建Agent（生成工具调用信息，由 Supervisor 统一执行）
         self._inner_agent = create_agent(

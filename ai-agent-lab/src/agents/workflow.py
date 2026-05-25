@@ -23,7 +23,7 @@ import asyncio
 import logging
 
 from langchain_core.messages import (
-    HumanMessage, SystemMessage, AIMessage, ToolMessage
+    HumanMessage, SystemMessage, AIMessage, ToolMessage, BaseMessage
 )
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -74,7 +74,6 @@ def merge_with_empty(prev, next):
 
 class AgentState(TypedDict):
     """企业级多 Agent 状态定义"""
-    from langchain_core.messages import BaseMessage
     
     # ========== 消息层 ==========
     # 原始对话历史（无限增长，仅用于审计和回溯）
@@ -414,13 +413,15 @@ async def _build_agent_response(
         # 获取压缩后的消息上下文（动态压缩）
         messages = state["messages"]
         
+        # 获取用户查询
+        user_query = str(messages[-1].content) if messages else ""
+        
         # 加载并注入长期记忆上下文
         user_id = config.get("configurable", {}).get("user_id")
         long_term_memory_context = ""
         if user_id:
             try:
                 long_term_memory = LongTermMemoryManager()
-                user_query = str(messages[-1].content) if messages else ""
                 long_term_memory_context = long_term_memory.build_memory_context(user_id, user_query)
             except Exception as e:
                 logger.error(f"加载长期记忆失败: {e}")

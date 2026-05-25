@@ -18,10 +18,10 @@
 """
 
 from typing import List, Dict, Any, Optional, Type
-from langchain_core.tools import BaseTool as LangChainBaseTool, StructuredTool
+from langchain_core.tools import BaseTool as LangChainBaseTool, BaseTool
 from pydantic import BaseModel, Field
 
-from src.tools.base import BaseTool, ToolMetadata
+from src.tools.base import ToolMetadata
 from src.tools.registry import tool_registry
 from src.tools.executor import tool_executor, ExecutionResult
 
@@ -55,14 +55,14 @@ class ToolAPI:
         """获取工具信息"""
         tool_class = tool_registry.get_tool(tool_name)
         if tool_class:
-            metadata = tool_class.metadata
+            metadata = getattr(tool_class, 'metadata', None)
             return ToolInfo(
                 name=tool_class.name,
                 description=tool_class.description,
-                category=metadata.category,
-                tags=metadata.tags,
-                rate_limit=metadata.rate_limit,
-                timeout=metadata.timeout
+                category=getattr(metadata, 'category', 'general') if metadata else 'general',
+                tags=getattr(metadata, 'tags', []) if metadata else [],
+                rate_limit=getattr(metadata, 'rate_limit', 10) if metadata else 10,
+                timeout=getattr(metadata, 'timeout', 30) if metadata else 30
             )
         return None
     
@@ -70,14 +70,14 @@ class ToolAPI:
         """获取所有工具信息"""
         infos = []
         for tool_class in tool_registry.get_all_tools():
-            metadata = tool_class.metadata
+            metadata = getattr(tool_class, 'metadata', None)
             infos.append(ToolInfo(
                 name=tool_class.name,
                 description=tool_class.description,
-                category=metadata.category,
-                tags=metadata.tags,
-                rate_limit=metadata.rate_limit,
-                timeout=metadata.timeout
+                category=getattr(metadata, 'category', 'general') if metadata else 'general',
+                tags=getattr(metadata, 'tags', []) if metadata else [],
+                rate_limit=getattr(metadata, 'rate_limit', 10) if metadata else 10,
+                timeout=getattr(metadata, 'timeout', 30) if metadata else 30
             ))
         return infos
     
@@ -96,47 +96,28 @@ class ToolAPI:
         return await asyncio.gather(*tasks)
     
     def to_langchain_tools(self) -> List[LangChainBaseTool]:
-        """转换为 LangChain 工具格式（包含注册工具和 MCP 工具）"""
+        """转换为 LangChain 工具格式（包含注册工具、MCP 工具和 Skill）"""
         langchain_tools = []
         
-        # 1. 添加注册到 tool_registry 的工具
+        # 0. 添加 Skill 技能（从 skills 模块加载）
+        try:
+            from src.tools.skills import SkillManager
+
+            skill_manager = SkillManager()
+            skill_manager.initialize()
+            skill_tools = skill_manager.to_langchain_tools()
+            
+            if skill_tools:
+                langchain_tools.extend(skill_tools)
+                print(f"🎯 已加载 {len(skill_tools)} 个技能")
+        except Exception as e:
+            # Skills 模块未配置或 SDK 不可用时跳过
+            pass
+        
+        # 1. 添加注册到 tool_registry 的工具（已经是 LangChain BaseTool）
         for tool_class in tool_registry.get_all_tools():
-            # 创建工具实例
             tool_instance = tool_class()
-            
-            # 获取输入输出模型
-            input_model = tool_class.input_schema
-            output_model = tool_class.output_schema
-            
-            # 创建异步包装函数
-            async def _async_wrapped_call(tool_instance=tool_instance, **kwargs):
-                result = await tool_instance.execute(**kwargs)
-                if hasattr(result, 'model_dump'):
-                    return result.model_dump()
-                return result
-            
-            # 创建同步包装函数（用于同步调用）
-            def _sync_wrapped_call(tool_instance=tool_instance, **kwargs):
-                import asyncio
-                try:
-                    # 检查是否已有运行中的事件循环
-                    loop = asyncio.get_running_loop()
-                    # 如果有运行中的事件循环，使用 create_task 并等待
-                    return loop.run_until_complete(_async_wrapped_call(tool_instance=tool_instance, **kwargs))
-                except RuntimeError:
-                    # 没有运行中的事件循环，使用 asyncio.run
-                    return asyncio.run(_async_wrapped_call(tool_instance=tool_instance, **kwargs))
-            
-            # 创建 StructuredTool
-            langchain_tool = StructuredTool.from_function(
-                name=tool_class.name,
-                func=_sync_wrapped_call,
-                description=tool_class.description,
-                args_schema=input_model,
-                coroutine=_async_wrapped_call
-            )
-            
-            langchain_tools.append(langchain_tool)
+            langchain_tools.append(tool_instance)
         
         # 2. 添加 MCP 工具（动态发现）
         try:

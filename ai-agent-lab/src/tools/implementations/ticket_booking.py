@@ -3,11 +3,11 @@
 import asyncio
 import uuid
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Type
 from enum import Enum
 from pydantic import BaseModel, Field
 
-from src.tools.base import AsyncTool, ToolMetadata, ToolOutput
+from src.tools.base import BaseTool
 from src.tools.registry import register_tool
 
 
@@ -20,15 +20,15 @@ class BookingStatus(str, Enum):
 
 class MockTicketDB:
     """模拟票务数据库"""
-    
+
     def __init__(self):
         self.bookings = {}
         self._lock = asyncio.Lock()
-    
+
     async def create_booking(self, ticket_type: str, data: Dict) -> Dict:
         booking_id = f"{ticket_type[0].upper()}BK{int(time.time() * 1000)}"
         ticket_number = f"TK{uuid.uuid4().hex[:8].upper()}"
-        
+
         booking = {
             "booking_id": booking_id,
             "ticket_number": ticket_number,
@@ -46,13 +46,13 @@ class MockTicketDB:
             "price": data["price"],
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        
+
         self.bookings[booking_id] = booking
         return booking
-    
+
     async def get_booking(self, booking_id: str) -> Optional[Dict]:
         return self.bookings.get(booking_id)
-    
+
     async def cancel_booking(self, booking_id: str) -> bool:
         if booking_id in self.bookings:
             self.bookings[booking_id]["status"] = BookingStatus.CANCELLED
@@ -77,8 +77,10 @@ class FlightBookingInput(BaseModel):
     passenger_id: str = Field(default="110101199001011234", description="证件号码")
 
 
-class FlightBookingOutput(ToolOutput):
+class FlightBookingOutput(BaseModel):
     """机票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     ticket_number: str = Field(description="票号")
     flight_number: str = Field(description="航班号")
@@ -87,24 +89,16 @@ class FlightBookingOutput(ToolOutput):
 
 
 @register_tool
-class FlightBookingTool(AsyncTool[FlightBookingInput, FlightBookingOutput]):
+class FlightBookingTool(BaseTool):
     name = "book_flight"
     description = "预订机票，支持国内主要城市"
-    input_schema = FlightBookingInput
-    output_schema = FlightBookingOutput
-    metadata = ToolMetadata(
-        name="book_flight",
-        description="机票预订工具",
-        category="booking",
-        tags=["flight", "booking", "travel"],
-        rate_limit=50,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = FlightBookingInput
+    metadata = {"category": "booking", "tags": ["flight", "booking", "travel"]}
 
-    async def async_execute(self, departure_city: str, arrival_city: str, departure_date: str,
-                          departure_time: str, arrival_time: str, flight_number: str,
-                          price: float, passenger_name: str = "张三", 
-                          passenger_id: str = "110101199001011234") -> FlightBookingOutput:
+    async def _arun(self, departure_city: str, arrival_city: str, departure_date: str,
+                    departure_time: str, arrival_time: str, flight_number: str,
+                    price: float, passenger_name: str = "张三",
+                    passenger_id: str = "110101199001011234") -> FlightBookingOutput:
         booking = await _db.create_booking("flight", {
             "departure_city": departure_city,
             "arrival_city": arrival_city,
@@ -116,7 +110,7 @@ class FlightBookingTool(AsyncTool[FlightBookingInput, FlightBookingOutput]):
             "passenger_name": passenger_name,
             "passenger_id": passenger_id
         })
-        
+
         return FlightBookingOutput(
             success=True,
             message="机票预订成功",
@@ -133,28 +127,22 @@ class CancelFlightInput(BaseModel):
     booking_id: str = Field(description="预订订单ID")
 
 
-class CancelFlightOutput(ToolOutput):
+class CancelFlightOutput(BaseModel):
     """取消机票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     refund_amount: float = Field(description="退款金额")
 
 
 @register_tool
-class CancelFlightTool(AsyncTool[CancelFlightInput, CancelFlightOutput]):
+class CancelFlightTool(BaseTool):
     name = "cancel_flight"
     description = "取消机票预订"
-    input_schema = CancelFlightInput
-    output_schema = CancelFlightOutput
-    metadata = ToolMetadata(
-        name="cancel_flight",
-        description="取消机票预订工具",
-        category="booking",
-        tags=["flight", "cancel", "refund"],
-        rate_limit=50,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = CancelFlightInput
+    metadata = {"category": "booking", "tags": ["flight", "cancel", "refund"]}
 
-    async def async_execute(self, booking_id: str) -> CancelFlightOutput:
+    async def _arun(self, booking_id: str) -> CancelFlightOutput:
         booking = await _db.get_booking(booking_id)
         if not booking:
             return CancelFlightOutput(
@@ -162,16 +150,16 @@ class CancelFlightTool(AsyncTool[CancelFlightInput, CancelFlightOutput]):
                 message="订单不存在",
                 booking_id=booking_id
             )
-        
+
         if booking["ticket_type"] != "flight":
             return CancelFlightOutput(
                 success=False,
                 message="不是机票订单",
                 booking_id=booking_id
             )
-        
+
         await _db.cancel_booking(booking_id)
-        
+
         return CancelFlightOutput(
             success=True,
             message="机票退票成功",
@@ -185,8 +173,10 @@ class QueryFlightInput(BaseModel):
     booking_id: str = Field(description="预订订单ID")
 
 
-class QueryFlightOutput(ToolOutput):
+class QueryFlightOutput(BaseModel):
     """查询机票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     ticket_number: str = Field(description="票号")
     flight_number: str = Field(description="航班号")
@@ -198,21 +188,13 @@ class QueryFlightOutput(ToolOutput):
 
 
 @register_tool
-class QueryFlightTool(AsyncTool[QueryFlightInput, QueryFlightOutput]):
+class QueryFlightTool(BaseTool):
     name = "query_flight"
     description = "查询机票预订状态"
-    input_schema = QueryFlightInput
-    output_schema = QueryFlightOutput
-    metadata = ToolMetadata(
-        name="query_flight",
-        description="查询机票预订工具",
-        category="booking",
-        tags=["flight", "query"],
-        rate_limit=50,
-        timeout=10
-    )
+    args_schema: Type[BaseModel] = QueryFlightInput
+    metadata = {"category": "booking", "tags": ["flight", "query"]}
 
-    async def async_execute(self, booking_id: str) -> QueryFlightOutput:
+    async def _arun(self, booking_id: str) -> QueryFlightOutput:
         booking = await _db.get_booking(booking_id)
         if not booking:
             return QueryFlightOutput(
@@ -220,14 +202,14 @@ class QueryFlightTool(AsyncTool[QueryFlightInput, QueryFlightOutput]):
                 message="订单不存在",
                 booking_id=booking_id
             )
-        
+
         if booking["ticket_type"] != "flight":
             return QueryFlightOutput(
                 success=False,
                 message="不是机票订单",
                 booking_id=booking_id
             )
-        
+
         return QueryFlightOutput(
             success=True,
             message="查询成功",
@@ -255,8 +237,10 @@ class TrainBookingInput(BaseModel):
     passenger_id: str = Field(default="110101199001011234", description="证件号码")
 
 
-class TrainBookingOutput(ToolOutput):
+class TrainBookingOutput(BaseModel):
     """高铁票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     ticket_number: str = Field(description="票号")
     train_number: str = Field(description="车次")
@@ -265,24 +249,16 @@ class TrainBookingOutput(ToolOutput):
 
 
 @register_tool
-class TrainBookingTool(AsyncTool[TrainBookingInput, TrainBookingOutput]):
+class TrainBookingTool(BaseTool):
     name = "book_train"
     description = "预订高铁票，支持国内主要城市"
-    input_schema = TrainBookingInput
-    output_schema = TrainBookingOutput
-    metadata = ToolMetadata(
-        name="book_train",
-        description="高铁票预订工具",
-        category="booking",
-        tags=["train", "booking", "travel"],
-        rate_limit=50,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = TrainBookingInput
+    metadata = {"category": "booking", "tags": ["train", "booking", "travel"]}
 
-    async def async_execute(self, departure_city: str, arrival_city: str, departure_date: str,
-                          departure_time: str, arrival_time: str, train_number: str,
-                          price: float, passenger_name: str = "张三", 
-                          passenger_id: str = "110101199001011234") -> TrainBookingOutput:
+    async def _arun(self, departure_city: str, arrival_city: str, departure_date: str,
+                    departure_time: str, arrival_time: str, train_number: str,
+                    price: float, passenger_name: str = "张三",
+                    passenger_id: str = "110101199001011234") -> TrainBookingOutput:
         booking = await _db.create_booking("train", {
             "departure_city": departure_city,
             "arrival_city": arrival_city,
@@ -294,7 +270,7 @@ class TrainBookingTool(AsyncTool[TrainBookingInput, TrainBookingOutput]):
             "passenger_name": passenger_name,
             "passenger_id": passenger_id
         })
-        
+
         return TrainBookingOutput(
             success=True,
             message="高铁票预订成功",
@@ -311,28 +287,22 @@ class CancelTrainInput(BaseModel):
     booking_id: str = Field(description="预订订单ID")
 
 
-class CancelTrainOutput(ToolOutput):
+class CancelTrainOutput(BaseModel):
     """取消高铁票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     refund_amount: float = Field(description="退款金额")
 
 
 @register_tool
-class CancelTrainTool(AsyncTool[CancelTrainInput, CancelTrainOutput]):
+class CancelTrainTool(BaseTool):
     name = "cancel_train"
     description = "取消高铁票预订"
-    input_schema = CancelTrainInput
-    output_schema = CancelTrainOutput
-    metadata = ToolMetadata(
-        name="cancel_train",
-        description="取消高铁票预订工具",
-        category="booking",
-        tags=["train", "cancel", "refund"],
-        rate_limit=50,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = CancelTrainInput
+    metadata = {"category": "booking", "tags": ["train", "cancel", "refund"]}
 
-    async def async_execute(self, booking_id: str) -> CancelTrainOutput:
+    async def _arun(self, booking_id: str) -> CancelTrainOutput:
         booking = await _db.get_booking(booking_id)
         if not booking:
             return CancelTrainOutput(
@@ -340,16 +310,16 @@ class CancelTrainTool(AsyncTool[CancelTrainInput, CancelTrainOutput]):
                 message="订单不存在",
                 booking_id=booking_id
             )
-        
+
         if booking["ticket_type"] != "train":
             return CancelTrainOutput(
                 success=False,
                 message="不是高铁票订单",
                 booking_id=booking_id
             )
-        
+
         await _db.cancel_booking(booking_id)
-        
+
         return CancelTrainOutput(
             success=True,
             message="高铁票退票成功",
@@ -363,8 +333,10 @@ class QueryTrainInput(BaseModel):
     booking_id: str = Field(description="预订订单ID")
 
 
-class QueryTrainOutput(ToolOutput):
+class QueryTrainOutput(BaseModel):
     """查询高铁票预订输出"""
+    success: bool = True
+    message: Optional[str] = None
     booking_id: str = Field(description="预订订单ID")
     ticket_number: str = Field(description="票号")
     train_number: str = Field(description="车次")
@@ -376,21 +348,13 @@ class QueryTrainOutput(ToolOutput):
 
 
 @register_tool
-class QueryTrainTool(AsyncTool[QueryTrainInput, QueryTrainOutput]):
+class QueryTrainTool(BaseTool):
     name = "query_train"
     description = "查询高铁票预订状态"
-    input_schema = QueryTrainInput
-    output_schema = QueryTrainOutput
-    metadata = ToolMetadata(
-        name="query_train",
-        description="查询高铁票预订工具",
-        category="booking",
-        tags=["train", "query"],
-        rate_limit=50,
-        timeout=10
-    )
+    args_schema: Type[BaseModel] = QueryTrainInput
+    metadata = {"category": "booking", "tags": ["train", "query"]}
 
-    async def async_execute(self, booking_id: str) -> QueryTrainOutput:
+    async def _arun(self, booking_id: str) -> QueryTrainOutput:
         booking = await _db.get_booking(booking_id)
         if not booking:
             return QueryTrainOutput(
@@ -398,14 +362,14 @@ class QueryTrainTool(AsyncTool[QueryTrainInput, QueryTrainOutput]):
                 message="订单不存在",
                 booking_id=booking_id
             )
-        
+
         if booking["ticket_type"] != "train":
             return QueryTrainOutput(
                 success=False,
                 message="不是高铁票订单",
                 booking_id=booking_id
             )
-        
+
         return QueryTrainOutput(
             success=True,
             message="查询成功",

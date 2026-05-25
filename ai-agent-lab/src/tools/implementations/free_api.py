@@ -1,10 +1,10 @@
 """免费 API 工具实现"""
 
 import aiohttp
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 from pydantic import BaseModel, Field
 
-from src.tools.base import AsyncTool, ToolMetadata, ToolOutput
+from src.tools.base import BaseTool
 from src.tools.registry import register_tool
 
 
@@ -16,8 +16,10 @@ class IPInfoInput(BaseModel):
     )
 
 
-class IPInfoOutput(ToolOutput):
+class IPInfoOutput(BaseModel):
     """IP 信息查询输出"""
+    success: bool = True
+    message: Optional[str] = None
     ip: str = Field(description="IP 地址")
     city: str = Field(description="城市")
     region: str = Field(description="地区")
@@ -31,23 +33,15 @@ class IPInfoOutput(ToolOutput):
 
 
 @register_tool
-class IPInfoTool(AsyncTool[IPInfoInput, IPInfoOutput]):
+class IPInfoTool(BaseTool):
     name = "ip_info"
     description = "获取 IP 地址的详细信息，包括地理位置、ISP、时区等。无需 API key。"
-    input_schema = IPInfoInput
-    output_schema = IPInfoOutput
-    metadata = ToolMetadata(
-        name="ip_info",
-        description="IP 地址信息查询工具",
-        category="api",
-        tags=["ip", "network", "geolocation"],
-        rate_limit=10,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = IPInfoInput
+    metadata = {"category": "api", "tags": ["ip", "network", "geolocation"]}
 
-    async def async_execute(self, ip_address: Optional[str] = None) -> IPInfoOutput:
+    async def _arun(self, ip_address: Optional[str] = None) -> IPInfoOutput:
         url = f"https://ipapi.co/{ip_address}/json/" if ip_address else "https://ipapi.co/json/"
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
@@ -80,8 +74,10 @@ class ExchangeRateInput(BaseModel):
     amount: Optional[float] = Field(default=1.0, description="金额，默认为 1")
 
 
-class ExchangeRateOutput(ToolOutput):
+class ExchangeRateOutput(BaseModel):
     """汇率查询输出"""
+    success: bool = True
+    message: Optional[str] = None
     base_currency: str = Field(description="基础货币")
     target_currency: str = Field(description="目标货币")
     exchange_rate: float = Field(description="汇率")
@@ -91,37 +87,29 @@ class ExchangeRateOutput(ToolOutput):
 
 
 @register_tool
-class ExchangeRateTool(AsyncTool[ExchangeRateInput, ExchangeRateOutput]):
+class ExchangeRateTool(BaseTool):
     name = "exchange_rate"
     description = "查询货币汇率并计算兑换金额。支持多种货币。无需 API key。"
-    input_schema = ExchangeRateInput
-    output_schema = ExchangeRateOutput
-    metadata = ToolMetadata(
-        name="exchange_rate",
-        description="货币汇率查询工具",
-        category="api",
-        tags=["currency", "finance", "exchange"],
-        rate_limit=10,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = ExchangeRateInput
+    metadata = {"category": "api", "tags": ["currency", "finance", "exchange"]}
 
-    async def async_execute(self, base_currency: str = "USD", target_currency: str = "CNY", 
-                           amount: float = 1.0) -> ExchangeRateOutput:
+    async def _arun(self, base_currency: str = "USD", target_currency: str = "CNY",
+                    amount: float = 1.0) -> ExchangeRateOutput:
         url = f"https://api.exchangerate-api.com/v4/latest/{base_currency.upper()}"
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     result = await response.json()
                     rates = result.get("rates", {})
                     rate = rates.get(target_currency.upper())
-                    
+
                     if rate is None:
                         return ExchangeRateOutput(
                             success=False,
                             message=f"未找到货币 {target_currency} 的汇率"
                         )
-                    
+
                     return ExchangeRateOutput(
                         success=True,
                         message="查询成功",
@@ -146,30 +134,24 @@ class QuoteInput(BaseModel):
     limit: Optional[int] = Field(default=1, description="返回的名言数量，最大 20")
 
 
-class QuoteOutput(ToolOutput):
+class QuoteOutput(BaseModel):
     """名言查询输出"""
+    success: bool = True
+    message: Optional[str] = None
     quotes: List[Dict[str, Any]] = Field(description="名言列表")
 
 
 @register_tool
-class RandomQuoteTool(AsyncTool[QuoteInput, QuoteOutput]):
+class RandomQuoteTool(BaseTool):
     name = "random_quote"
     description = "获取随机名言，可按作者或标签筛选。无需 API key。"
-    input_schema = QuoteInput
-    output_schema = QuoteOutput
-    metadata = ToolMetadata(
-        name="random_quote",
-        description="随机名言获取工具",
-        category="api",
-        tags=["quote", "inspiration", "text"],
-        rate_limit=20,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = QuoteInput
+    metadata = {"category": "api", "tags": ["quote", "inspiration", "text"]}
 
-    async def async_execute(self, author: Optional[str] = None, tags: Optional[str] = None, 
-                          limit: int = 1) -> QuoteOutput:
+    async def _arun(self, author: Optional[str] = None, tags: Optional[str] = None,
+                    limit: int = 1) -> QuoteOutput:
         base_url = "https://api.quotable.io"
-        
+
         if author:
             url = f"{base_url}/quotes"
             params = {"author": author, "limit": min(limit, 20)}
@@ -179,13 +161,13 @@ class RandomQuoteTool(AsyncTool[QuoteInput, QuoteOutput]):
         else:
             url = f"{base_url}/quotes/random"
             params = {"limit": min(limit, 20)}
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     result = await response.json()
                     quotes = result if isinstance(result, list) else result.get("results", [])
-                    
+
                     formatted_quotes = []
                     for quote in quotes[:limit]:
                         formatted_quotes.append({
@@ -194,7 +176,7 @@ class RandomQuoteTool(AsyncTool[QuoteInput, QuoteOutput]):
                             "tags": quote.get("tags", []),
                             "length": quote.get("length", 0)
                         })
-                    
+
                     return QuoteOutput(
                         success=True,
                         message="查询成功",
@@ -214,36 +196,30 @@ class PublicAPIInput(BaseModel):
     limit: Optional[int] = Field(default=10, description="返回的 API 数量，最大 50")
 
 
-class PublicAPIOutput(ToolOutput):
+class PublicAPIOutput(BaseModel):
     """公共 API 查询输出"""
+    success: bool = True
+    message: Optional[str] = None
     apis: List[Dict[str, Any]] = Field(description="API 列表")
 
 
 @register_tool
-class PublicAPIsTool(AsyncTool[PublicAPIInput, PublicAPIOutput]):
+class PublicAPIsTool(BaseTool):
     name = "public_apis"
     description = "搜索和浏览公共 API 列表，可按类别或关键词筛选。无需 API key。"
-    input_schema = PublicAPIInput
-    output_schema = PublicAPIOutput
-    metadata = ToolMetadata(
-        name="public_apis",
-        description="公共 API 列表查询工具",
-        category="api",
-        tags=["api", "directory", "resources"],
-        rate_limit=10,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = PublicAPIInput
+    metadata = {"category": "api", "tags": ["api", "directory", "resources"]}
 
-    async def async_execute(self, category: Optional[str] = None, search: Optional[str] = None, 
-                          limit: int = 10) -> PublicAPIOutput:
+    async def _arun(self, category: Optional[str] = None, search: Optional[str] = None,
+                    limit: int = 10) -> PublicAPIOutput:
         url = "https://api.publicapis.org/entries"
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     result = await response.json()
                     entries = result.get("entries", [])
-                    
+
                     filtered_entries = []
                     for entry in entries:
                         match = True
@@ -256,7 +232,7 @@ class PublicAPIsTool(AsyncTool[PublicAPIInput, PublicAPIOutput]):
                             filtered_entries.append(entry)
                         if len(filtered_entries) >= limit:
                             break
-                    
+
                     formatted_apis = []
                     for api in filtered_entries:
                         formatted_apis.append({
@@ -268,7 +244,7 @@ class PublicAPIsTool(AsyncTool[PublicAPIInput, PublicAPIOutput]):
                             "https": api.get("HTTPS", False),
                             "cors": api.get("Cors", "未知")
                         })
-                    
+
                     return PublicAPIOutput(
                         success=True,
                         message="查询成功",
@@ -290,8 +266,10 @@ class PlaceholderImageInput(BaseModel):
     text_color: Optional[str] = Field(default="000000", description="文字颜色（十六进制，不带#）")
 
 
-class PlaceholderImageOutput(ToolOutput):
+class PlaceholderImageOutput(BaseModel):
     """占位符图片输出"""
+    success: bool = True
+    message: Optional[str] = None
     image_url: str = Field(description="图片 URL")
     width: int = Field(description="图片宽度")
     height: int = Field(description="图片高度")
@@ -299,28 +277,20 @@ class PlaceholderImageOutput(ToolOutput):
 
 
 @register_tool
-class PlaceholderImageTool(AsyncTool[PlaceholderImageInput, PlaceholderImageOutput]):
+class PlaceholderImageTool(BaseTool):
     name = "placeholder_image"
     description = "生成占位符图片 URL，可自定义尺寸、颜色和文字。无需 API key。"
-    input_schema = PlaceholderImageInput
-    output_schema = PlaceholderImageOutput
-    metadata = ToolMetadata(
-        name="placeholder_image",
-        description="占位符图片生成工具",
-        category="api",
-        tags=["image", "placeholder", "design"],
-        rate_limit=50,
-        timeout=10
-    )
+    args_schema: Type[BaseModel] = PlaceholderImageInput
+    metadata = {"category": "api", "tags": ["image", "placeholder", "design"]}
 
-    async def async_execute(self, width: int = 300, height: int = 200, text: Optional[str] = None,
-                          background_color: str = "cccccc", text_color: str = "000000") -> PlaceholderImageOutput:
+    async def _arun(self, width: int = 300, height: int = 200, text: Optional[str] = None,
+                    background_color: str = "cccccc", text_color: str = "000000") -> PlaceholderImageOutput:
         width = min(width, 2000)
         height = min(height, 2000)
-        
+
         base_url = f"https://via.placeholder.com/{width}x{height}"
         params = []
-        
+
         if background_color:
             params.append(f"bg={background_color}")
         if text_color:
@@ -329,9 +299,9 @@ class PlaceholderImageTool(AsyncTool[PlaceholderImageInput, PlaceholderImageOutp
             import urllib.parse
             encoded_text = urllib.parse.quote(text)
             params.append(f"text={encoded_text}")
-        
+
         url = f"{base_url}/{'/'.join(params)}" if params else base_url
-        
+
         return PlaceholderImageOutput(
             success=True,
             message="生成成功",

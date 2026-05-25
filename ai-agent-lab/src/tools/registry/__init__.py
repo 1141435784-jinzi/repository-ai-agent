@@ -25,7 +25,8 @@ from typing import Dict, List, Type, Optional, Any, Callable
 from abc import ABC
 import logging
 
-from src.tools.base import BaseTool, ToolMetadata
+from langchain_core.tools import BaseTool
+from src.tools.base import ToolMetadata
 
 logger = logging.getLogger(__name__)
 

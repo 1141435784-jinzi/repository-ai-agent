@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Type
 from dataclasses import dataclass, field
 import time
 
-from src.tools.base import AsyncTool, ToolMetadata, ToolOutput
+from src.tools.base import BaseTool, ToolOutput
 from src.tools.registry import register_tool
 from pydantic import BaseModel, Field, create_model
 
@@ -280,23 +280,15 @@ class MCPToolOutput(ToolOutput):
 
 
 @register_tool
-class MCPToolWrapper(AsyncTool[MCPToolInput, MCPToolOutput]):
+class MCPToolWrapper(BaseTool):
     name = "mcp_tool"
     description = "调用 MCP (Model Context Protocol) 工具"
-    input_schema = MCPToolInput
-    output_schema = MCPToolOutput
-    metadata = ToolMetadata(
-        name="mcp_tool",
-        description="MCP 工具包装器",
-        category="mcp",
-        tags=["mcp", "external", "plugin"],
-        rate_limit=100,
-        timeout=30
-    )
+    args_schema: Type[BaseModel] = MCPToolInput
+    metadata = {"category": "mcp", "tags": ["mcp", "external", "plugin"]}
 
-    async def async_execute(self, tool_name: str, kwargs: Dict[str, Any] = {}) -> MCPToolOutput:
+    async def _arun(self, tool_name: str, kwargs: Dict[str, Any] = {}) -> MCPToolOutput:
         try:
-            result = await call_mcp_tool(tool_name,** kwargs)
+            result = await call_mcp_tool(tool_name, **kwargs)
             return MCPToolOutput(
                 success=True,
                 message="调用成功",

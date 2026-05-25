@@ -17,8 +17,6 @@ import uuid
 from datetime import datetime
 from typing import Optional, Dict
 
-from src.memory.manager import get_memory_manager
-
 
 class SessionService:
     """会话服务类"""
@@ -89,18 +87,8 @@ class SessionService:
             actual_user_id = user_id if user_id else self._extract_user_id(thread_id)
             if session.get("user_id") == actual_user_id:
                 del self.sessions[thread_id]
-                # 同时清除记忆
-                asyncio.create_task(self._clear_memory(thread_id))
                 return True
         return False
-
-    async def _clear_memory(self, thread_id: str):
-        """清除会话记忆"""
-        try:
-            memory_manager = get_memory_manager()
-            await memory_manager.clear_memory(thread_id)
-        except Exception:
-            pass
 
     def list_sessions(self) -> list:
         """

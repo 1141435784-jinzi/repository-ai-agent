@@ -31,6 +31,35 @@ from src.tools.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
+# 延迟导入，避免循环依赖
+_skill_manager = None
+_skill_adapter = None
+
+def _get_skill_manager():
+    """获取 Skill 管理器（延迟加载）"""
+    global _skill_manager
+    if _skill_manager is None:
+        try:
+            from src.tools.skills import SkillManager
+            _skill_manager = SkillManager()
+            _skill_manager.initialize()
+        except ImportError:
+            pass
+    return _skill_manager
+
+def _get_skill_adapter():
+    """获取 Skill LangChain 适配器（延迟加载）"""
+    global _skill_adapter
+    if _skill_adapter is None:
+        try:
+            from agent_skills_sdk.adapters.langchain import LangChainAdapter
+            skill_manager = _get_skill_manager()
+            if skill_manager:
+                _skill_adapter = LangChainAdapter(skill_paths=[skill_manager.skills_dir])
+        except ImportError:
+            pass
+    return _skill_adapter
+
 
 class ExecutionContext:
     """
@@ -224,6 +253,10 @@ class ToolExecutor:
         """
         执行工具（统一入口）
         
+        支持执行：
+        1. 注册到 tool_registry 的工具
+        2. 通过 agent_skills_sdk 安装的 Skill
+        
         Args:
             tool_name: 工具名称
             **kwargs: 工具参数
@@ -243,13 +276,24 @@ class ToolExecutor:
             if rate_limiter and not await rate_limiter.acquire():
                 raise RuntimeError(f"工具 {tool_name} 调用过于频繁，请稍后再试")
             
-            # 3. 获取工具实例
+            # 3. 获取工具实例（先尝试注册的工具，再尝试 Skill）
             tool_instance = tool_registry.get_tool_instance(tool_name)
+            is_skill = False
+            
+            if not tool_instance:
+                # 尝试从 Skill 管理器获取
+                skill_manager = _get_skill_manager()
+                if skill_manager:
+                    tool_instance = await self._get_skill_tool(tool_name, skill_manager)
+                    is_skill = True
+            
             if not tool_instance:
                 raise ValueError(f"工具 {tool_name} 不存在")
             
-            # 4. 获取超时配置
-            timeout = tool_instance.get_metadata().timeout
+            # 4. 获取超时配置（Skill 使用默认超时）
+            timeout = 30  # 默认超时
+            if not is_skill and hasattr(tool_instance, 'metadata') and tool_instance.metadata:
+                timeout = getattr(tool_instance.metadata, 'timeout', 30)
             
             # 5. 执行前中间件
             for middleware in self._middleware:
@@ -259,7 +303,12 @@ class ToolExecutor:
             # 6. 执行工具（带超时）
             try:
                 async with asyncio.timeout(timeout):
-                    result = await tool_instance.execute(**kwargs)
+                    if is_skill:
+                        # Skill 执行 - 使用 ainvoke
+                        result = await tool_instance.ainvoke(kwargs)
+                    else:
+                        # 注册工具执行 - 使用 ainvoke
+                        result = await tool_instance.ainvoke(kwargs)
             except asyncio.TimeoutError:
                 context.timeout()
                 raise TimeoutError(f"工具 {tool_name} 执行超时（{timeout}秒）")
@@ -283,6 +332,34 @@ class ToolExecutor:
                     await middleware.on_error(context, e)
             
             return ExecutionResult(context)
+    
+    async def _get_skill_tool(self, tool_name: str, skill_manager) -> Optional[BaseTool]:
+        """
+        从 Skill 管理器获取工具
+
+        Args:
+            tool_name: 工具名称
+            skill_manager: SkillManager 实例
+
+        Returns:
+            Optional[BaseTool]: Skill 工具实例，如果未找到返回 None
+        """
+        try:
+            adapter = _get_skill_adapter()
+            if not adapter:
+                return None
+
+            skills_tools = adapter.as_langchain_tools()
+
+            # 查找匹配的工具
+            for tool in skills_tools:
+                if tool.name == tool_name or tool.name.lower() == tool_name.lower():
+                    return tool
+
+            return None
+        except Exception as e:
+            logger.error(f"获取 Skill 工具失败: {e}")
+            return None
     
     async def execute_with_retry(self, tool_name: str, max_retries: int = 3, **kwargs) -> ExecutionResult:
         """

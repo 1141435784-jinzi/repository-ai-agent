@@ -1,14 +1,14 @@
 """
 === 数学计算工具实现 ===
 
-基于企业级工具基类的数学计算工具实现。
+基于 LangChain BaseTool 的数学计算工具实现。
 """
 
 import math
-from typing import Optional
+from typing import Optional, Type
 from pydantic import BaseModel, Field
 
-from src.tools.base import AsyncTool, ToolOutput, ToolMetadata
+from src.tools.base import BaseTool
 from src.tools.registry import register_tool
 
 
@@ -20,43 +20,37 @@ class CalculatorInput(BaseModel):
     )
 
 
-class CalculatorOutput(ToolOutput):
+class CalculatorOutput(BaseModel):
     """数学计算工具输出结果"""
+    success: bool = True
+    message: Optional[str] = None
     expression: Optional[str] = None
     result: Optional[float] = None
 
 
 @register_tool
-class CalculatorTool(AsyncTool[CalculatorInput, CalculatorOutput]):
+class CalculatorTool(BaseTool):
     """数学表达式计算工具"""
-    
+
     name = "calculator"
     description = "执行数学表达式计算，支持 Python 语法，内置 math 模块函数。例如：'2 + 3 * 4'、'sqrt(16)'、'pow(2, 10)'、'(10 + 5) / 3'、'sin(pi/2)'。"
-    input_schema = CalculatorInput
-    output_schema = CalculatorOutput
-    metadata = ToolMetadata(
-        name="calculator",
-        description="数学表达式计算工具",
-        version="1.0.0",
-        category="utility",
-        tags=["math", "calculation", "arithmetic"],
-        requires_auth=False,
-        rate_limit=10,
-        timeout=10
-    )
-    
-    async def async_execute(self, expression: str) -> CalculatorOutput:
+    args_schema: Type[BaseModel] = CalculatorInput
+    metadata = {
+        "category": "utility",
+        "tags": ["math", "calculation", "arithmetic"],
+    }
+
+    def _run(self, expression: str) -> CalculatorOutput:
         """
         执行数学表达式计算
-        
+
         Args:
             expression: Python 数学表达式字符串
-        
+
         Returns:
             CalculatorOutput: 计算结果
         """
         try:
-            # 构建安全的执行环境
             safe_globals = {
                 'pi': math.pi,
                 'e': math.e,
@@ -81,17 +75,16 @@ class CalculatorTool(AsyncTool[CalculatorInput, CalculatorOutput]):
                 'int': int,
                 'float': float,
             }
-            
-            # 安全执行表达式
+
             result = eval(expression, {"__builtins__": {}}, safe_globals)
-            
+
             return CalculatorOutput(
                 success=True,
                 message=f"计算成功",
                 expression=expression,
                 result=float(result) if isinstance(result, (int, float)) else result
             )
-            
+
         except SyntaxError as e:
             return CalculatorOutput(
                 success=False,
@@ -107,3 +100,7 @@ class CalculatorTool(AsyncTool[CalculatorInput, CalculatorOutput]):
                 success=False,
                 message=f"计算错误: {str(e)}"
             )
+
+    async def _arun(self, expression: str) -> CalculatorOutput:
+        """异步执行"""
+        return self._run(expression)

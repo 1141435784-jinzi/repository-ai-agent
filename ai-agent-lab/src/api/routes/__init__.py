@@ -20,6 +20,7 @@ from .chat import router as chat_router
 from .tools import router as tools_router
 from .rag import router as rag_router
 from .memory import router as memory_router
+from .skills import router as skills_router
 
 # 创建主路由器（保持向后兼容，不添加版本前缀）
 api_router = APIRouter()
@@ -29,6 +30,7 @@ api_router.include_router(chat_router, tags=["聊天"])
 api_router.include_router(rag_router, tags=["RAG"])
 api_router.include_router(memory_router, tags=["记忆"])
 api_router.include_router(tools_router, tags=["工具"])
+api_router.include_router(skills_router, tags=["技能"])
 
 __all__ = [
     "api_router",
@@ -36,4 +38,5 @@ __all__ = [
     "tools_router",
     "rag_router",
     "memory_router",
+    "skills_router",
 ]

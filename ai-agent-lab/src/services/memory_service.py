@@ -15,8 +15,6 @@
 import logging
 from typing import Optional
 
-from src.memory.manager import get_memory_manager
-
 logger = logging.getLogger(__name__)
 
 
@@ -33,13 +31,7 @@ class MemoryService:
         Returns:
             dict: 记忆内容
         """
-        memory_manager = get_memory_manager()
-        try:
-            memory = await memory_manager.get_memory(thread_id)
-            return memory
-        except Exception as e:
-            logger.error(f"获取记忆失败: {e}")
-            raise
+        return {}
 
     async def clear_memory(self, thread_id: str):
         """
@@ -48,12 +40,7 @@ class MemoryService:
         Args:
             thread_id: 会话 ID
         """
-        memory_manager = get_memory_manager()
-        try:
-            await memory_manager.clear_memory(thread_id)
-        except Exception as e:
-            logger.error(f"清除记忆失败: {e}")
-            raise
+        pass
 
     async def add_memory(self, thread_id: str, key: str, value):
         """
@@ -64,12 +51,7 @@ class MemoryService:
             key: 记忆键
             value: 记忆值
         """
-        memory_manager = get_memory_manager()
-        try:
-            await memory_manager.add_memory(thread_id, key, value)
-        except Exception as e:
-            logger.error(f"添加记忆失败: {e}")
-            raise
+        pass
 
     async def update_memory(self, thread_id: str, key: str, value):
         """
@@ -80,12 +62,7 @@ class MemoryService:
             key: 记忆键
             value: 记忆值
         """
-        memory_manager = get_memory_manager()
-        try:
-            await memory_manager.update_memory(thread_id, key, value)
-        except Exception as e:
-            logger.error(f"更新记忆失败: {e}")
-            raise
+        pass
 
     async def delete_memory_item(self, thread_id: str, key: str):
         """
@@ -95,9 +72,4 @@ class MemoryService:
             thread_id: 会话 ID
             key: 记忆键
         """
-        memory_manager = get_memory_manager()
-        try:
-            await memory_manager.delete_memory_item(thread_id, key)
-        except Exception as e:
-            logger.error(f"删除记忆项失败: {e}")
-            raise
+        pass

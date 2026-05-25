@@ -1,19 +1,18 @@
 """
 === 天气查询工具实现 ===
 
-基于企业级工具基类的天气查询工具实现，支持中文城市名。
+基于 LangChain BaseTool 的天气查询工具实现，支持中文城市名。
 """
 
 import aiohttp
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Type
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from src.tools.base import AsyncTool, ToolOutput, ToolMetadata
+from src.tools.base import BaseTool
 from src.tools.registry import register_tool
 
 
-# 天气代码到中文描述的映射
 WEATHER_CODE_MAP = {
     0: "晴天",
     1: "大部分晴天",
@@ -53,8 +52,10 @@ class WeatherInput(BaseModel):
     )
 
 
-class WeatherOutput(ToolOutput):
+class WeatherOutput(BaseModel):
     """天气查询输出结果"""
+    success: bool = True
+    message: Optional[str] = None
     city: Optional[str] = None
     temperature: Optional[str] = None
     weather: Optional[str] = None
@@ -66,46 +67,38 @@ class WeatherOutput(ToolOutput):
 
 
 @register_tool
-class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
+class WeatherTool(BaseTool):
     """中国城市天气查询工具"""
-    
+
     name = "weather"
     description = "查询中国城市天气，支持中文城市名（如：北京、上海、广州）。提供实时天气、未来6小时预报和未来3天预报。无需 API key。"
-    input_schema = WeatherInput
-    output_schema = WeatherOutput
-    metadata = ToolMetadata(
-        name="weather",
-        description="中国城市天气查询工具",
-        version="1.0.0",
-        category="api",
-        tags=["weather", "china", "forecast"],
-        requires_auth=False,
-        rate_limit=5,
-        timeout=30
-    )
-    
-    async def async_execute(self, city: str) -> WeatherOutput:
+    args_schema: Type[BaseModel] = WeatherInput
+    metadata = {
+        "category": "api",
+        "tags": ["weather", "china", "forecast"],
+    }
+
+    async def _arun(self, city: str) -> WeatherOutput:
         """
         查询中国城市天气
-        
+
         Args:
             city: 城市名称
-        
+
         Returns:
             WeatherOutput: 天气信息
         """
         geocoding_url = "https://geocoding-api.open-meteo.com/v1/search"
         weather_url = "https://api.open-meteo.com/v1/forecast"
-        
+
         try:
-            # 1. 通过地理编码API获取城市坐标
             geocoding_params = {
                 "name": city,
                 "count": 1,
                 "language": "zh",
                 "format": "json"
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(geocoding_url, params=geocoding_params) as response:
                     if response.status != 200:
@@ -114,20 +107,19 @@ class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
                             message=f"地理编码失败: HTTP {response.status}"
                         )
                     geocoding_result = await response.json()
-            
+
             if not geocoding_result.get("results"):
                 return WeatherOutput(
                     success=False,
                     message=f"未找到城市: {city}"
                 )
-            
+
             location = geocoding_result["results"][0]
             city_name = location["name"]
             latitude = location["latitude"]
             longitude = location["longitude"]
             timezone = location.get("timezone", "Asia/Shanghai")
-            
-            # 2. 查询天气数据
+
             weather_params = {
                 "latitude": latitude,
                 "longitude": longitude,
@@ -137,7 +129,7 @@ class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
                 "daily": "weather_code,temperature_2m_max,temperature_2m_min",
                 "forecast_days": 3
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(weather_url, params=weather_params) as response:
                     if response.status != 200:
@@ -146,29 +138,28 @@ class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
                             message=f"天气查询失败: HTTP {response.status}"
                         )
                     weather_result = await response.json()
-            
+
             current = weather_result.get("current", {})
-            
+
             temperature = current.get("temperature_2m")
             humidity = current.get("relative_humidity_2m")
             weather_code = current.get("weather_code", 0)
             wind_speed = current.get("wind_speed_10m")
             wind_direction = current.get("wind_direction_10m")
-            
+
             weather_desc = WEATHER_CODE_MAP.get(weather_code, "未知天气")
-            
-            # 生成生活提示
+
             tips = []
             try:
                 temp = float(temperature) if temperature else 20
             except:
                 temp = 20
-            
+
             if temp > 30:
                 tips.append("天气炎热，注意防暑降温，多喝水")
             elif temp < 10:
                 tips.append("天气寒冷，注意保暖，添加衣物")
-            
+
             if "雨" in weather_desc:
                 tips.append("有降雨，出门请带伞")
             elif "雪" in weather_desc:
@@ -177,10 +168,10 @@ class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
                 tips.append("有雷暴，避免户外活动，注意安全")
             elif "雾" in weather_desc:
                 tips.append("有雾，能见度低，注意交通安全")
-            
+
             if not tips:
                 tips.append("天气适宜，适合户外活动")
-            
+
             return WeatherOutput(
                 success=True,
                 message="查询成功",
@@ -193,7 +184,7 @@ class WeatherTool(AsyncTool[WeatherInput, WeatherOutput]):
                 update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 tips=tips
             )
-            
+
         except Exception as e:
             return WeatherOutput(
                 success=False,

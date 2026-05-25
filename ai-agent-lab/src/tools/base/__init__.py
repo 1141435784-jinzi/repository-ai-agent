@@ -1,28 +1,19 @@
 """
-=== 第一层：工具基类层 ===
+=== 工具基类层 ===
 
-企业级工具系统的基础抽象层，定义所有工具必须遵循的标准接口。
+基于 LangChain BaseTool 的企业级工具系统。
 
 【设计原则】：
-1. 统一接口：所有工具继承 BaseTool
+1. 使用 LangChain BaseTool 作为基类
 2. 类型安全：使用 Pydantic 进行参数验证
 3. 异常处理：统一的错误处理机制
 4. 可扩展性：支持同步和异步工具
-
-【架构】：
-BaseTool (抽象基类)
-    ├── SyncTool (同步工具基类)
-    └── AsyncTool (异步工具基类)
 """
 
-from typing import Any, Dict, Optional, Type, TypeVar, Generic, List
-from abc import ABC, abstractmethod
-from pydantic import BaseModel, create_model
-import json
+from typing import Any, Dict, Optional, Type, List, Callable, ClassVar
+from pydantic import BaseModel, Field
 
-# 工具类型变量
-T = TypeVar('T', bound=BaseModel)
-U = TypeVar('U', bound=BaseModel)
+from langchain_core.tools import BaseTool as LangChainBaseTool
 
 
 class ToolMetadata(BaseModel):
@@ -34,8 +25,8 @@ class ToolMetadata(BaseModel):
     author: Optional[str] = None
     tags: List[str] = []
     requires_auth: bool = False
-    rate_limit: Optional[int] = None  # 每秒最大调用次数
-    timeout: int = 30  # 超时时间（秒）
+    rate_limit: Optional[int] = None
+    timeout: int = 30
 
 
 class ToolInput(BaseModel):
@@ -48,81 +39,92 @@ class ToolOutput(BaseModel):
     success: bool = True
     message: Optional[str] = None
     data: Optional[Any] = None
-    
+
     @classmethod
     def success_result(cls, data: Any = None, message: str = "执行成功") -> 'ToolOutput':
         return cls(success=True, data=data, message=message)
-    
+
     @classmethod
     def error_result(cls, message: str, data: Any = None) -> 'ToolOutput':
         return cls(success=False, data=data, message=message)
 
 
-class BaseTool(ABC, Generic[T, U]):
+class BaseTool(LangChainBaseTool):
     """
-    工具基类（抽象）
-    
-    所有工具必须继承此类，实现统一的接口标准。
-    
-    泛型参数：
-    - T: 输入参数类型（继承自 BaseModel）
-    - U: 输出结果类型（继承自 BaseModel）
-    
-    子类必须实现：
+    工具基类 - 基于 LangChain BaseTool
+
+    所有工具必须继承此类。
+
+    子类必须定义：
     - name: 工具名称（类属性）
     - description: 工具描述（类属性）
-    - input_schema: 输入参数 schema
-    - _execute: 执行逻辑（同步或异步）
+    - args_schema: 输入参数 Pydantic 模型
+
+    子类应实现：
+    - _run: 同步执行逻辑
+    - _arun: 异步执行逻辑（可选）
     """
-    
-    # 必须在子类中定义
-    name: str = "base_tool"
-    description: str = "基础工具"
-    input_schema: Type[T] = ToolInput
-    output_schema: Type[U] = ToolOutput
-    metadata: ToolMetadata = ToolMetadata(name="base_tool", description="基础工具")
-    
+
+    name: ClassVar[str] = "base_tool"
+    description: ClassVar[str] = "基础工具"
+    args_schema: ClassVar[Optional[Type[BaseModel]]] = ToolInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = None
+
+    def _run(self, **kwargs: Any) -> Any:
+        """
+        同步执行（默认实现）
+
+        Args:
+            **kwargs: 工具参数
+
+        Returns:
+            Any: 执行结果
+        """
+        raise NotImplementedError("子类必须实现 _run 方法")
+
+    async def _arun(self, **kwargs: Any) -> Any:
+        """
+        异步执行（默认实现调用同步方法）
+
+        Args:
+            **kwargs: 工具参数
+
+        Returns:
+            Any: 执行结果
+        """
+        return self._run(**kwargs)
+
     @classmethod
     def get_name(cls) -> str:
-        """获取工具名称"""
         return cls.name
-    
+
     @classmethod
     def get_description(cls) -> str:
-        """获取工具描述"""
         return cls.description
-    
-    @classmethod
-    def get_input_schema(cls) -> Type[T]:
-        """获取输入参数 schema"""
-        return cls.input_schema
-    
-    @classmethod
-    def get_output_schema(cls) -> Type[U]:
-        """获取输出结果 schema"""
-        return cls.output_schema
-    
+
     @classmethod
     def get_metadata(cls) -> ToolMetadata:
-        """获取工具元数据"""
-        return cls.metadata
-    
+        return ToolMetadata(name=cls.name, description=cls.description)
+
     @classmethod
     def to_function_calling_schema(cls) -> Dict[str, Any]:
         """
         转换为 OpenAI Function Calling 格式的 schema
-        
+
         Returns:
             Dict[str, Any]: Function Calling 格式的 schema
         """
-        input_model = cls.input_schema
+        input_model = cls.args_schema
+        if input_model is None:
+            input_model = ToolInput
+
         properties = {}
         required = []
-        
+
         for field_name, field_info in input_model.model_fields.items():
             field_type = field_info.annotation
             json_type = "string"
-            
+
             if field_type is int:
                 json_type = "integer"
             elif field_type is float:
@@ -133,15 +135,15 @@ class BaseTool(ABC, Generic[T, U]):
                 json_type = "array"
             elif field_type is dict:
                 json_type = "object"
-            
+
             properties[field_name] = {
                 "type": json_type,
                 "description": field_info.description or ""
             }
-            
+
             if field_info.is_required():
                 required.append(field_name)
-        
+
         return {
             "name": cls.name,
             "description": cls.description,
@@ -151,137 +153,84 @@ class BaseTool(ABC, Generic[T, U]):
                 "required": required
             }
         }
-    
-    @abstractmethod
-    async def execute(self, **kwargs) -> U:
-        """
-        执行工具（统一入口）
-        
-        Args:
-            **kwargs: 工具参数
-        
-        Returns:
-            U: 执行结果
-        """
-        pass
-    
-    def validate_input(self, **kwargs) -> T:
-        """
-        验证输入参数
-        
-        Args:
-            **kwargs: 输入参数
-        
-        Returns:
-            T: 验证后的参数对象
-        
-        Raises:
-            ValidationError: 参数验证失败
-        """
-        return self.input_schema(**kwargs)
-    
-    async def _execute_with_validation(self, **kwargs) -> U:
-        """
-        带参数验证的执行
-        
-        Args:
-            **kwargs: 工具参数
-        
-        Returns:
-            U: 执行结果
-        """
-        try:
-            validated_input = self.validate_input(**kwargs)
-            return await self.execute(**validated_input.model_dump())
-        except Exception as e:
-            return self.output_schema.error_result(str(e))
 
 
-class SyncTool(BaseTool[T, U], ABC):
-    """
-    同步工具基类
-    
-    子类只需实现 sync_execute 方法
-    """
-    
-    @abstractmethod
-    def sync_execute(self, **kwargs) -> U:
-        """
-        同步执行逻辑
-        
-        Args:
-            **kwargs: 工具参数
-        
-        Returns:
-            U: 执行结果
-        """
-        pass
-    
-    async def execute(self, **kwargs) -> U:
-        """
-        执行工具（统一入口）
-        
-        Args:
-            **kwargs: 工具参数
-        
-        Returns:
-            U: 执行结果
-        """
-        try:
-            validated_input = self.validate_input(**kwargs)
-            result = self.sync_execute(**validated_input.model_dump())
-            return result
-        except Exception as e:
-            return self.output_schema.error_result(str(e))
-
-
-class AsyncTool(BaseTool[T, U], ABC):
+class AsyncTool(BaseTool):
     """
     异步工具基类
-    
-    子类只需实现 async_execute 方法
+
+    子类只需实现 _arun 方法
     """
-    
-    @abstractmethod
-    async def async_execute(self, **kwargs) -> U:
+
+    async def _arun(self, **kwargs: Any) -> Any:
         """
         异步执行逻辑
-        
+
         Args:
             **kwargs: 工具参数
-        
+
         Returns:
-            U: 执行结果
+            Any: 执行结果
         """
-        pass
-    
-    async def execute(self, **kwargs) -> U:
+        raise NotImplementedError("子类必须实现 _arun 方法")
+
+
+class SyncTool(BaseTool):
+    """
+    同步工具基类
+
+    子类只需实现 _run 方法
+    """
+
+    def _run(self, **kwargs: Any) -> Any:
         """
-        执行工具（统一入口）
-        
+        同步执行逻辑
+
         Args:
             **kwargs: 工具参数
-        
+
         Returns:
-            U: 执行结果
+            Any: 执行结果
         """
-        try:
-            validated_input = self.validate_input(**kwargs)
-            result = await self.async_execute(**validated_input.model_dump())
-            return result
-        except Exception as e:
-            return self.output_schema.error_result(str(e))
+        raise NotImplementedError("子类必须实现 _run 方法")
 
 
-# 导出列表
+def create_tool(
+    name: str,
+    description: str,
+    func: Callable,
+    args_schema: Optional[Type[BaseModel]] = None
+) -> BaseTool:
+    """
+    动态创建工具的工厂函数
+
+    Args:
+        name: 工具名称
+        description: 工具描述
+        func: 执行函数
+        args_schema: 参数 schema（可选）
+
+    Returns:
+        BaseTool: 创建的工具实例
+    """
+    return type(
+        name,
+        (BaseTool,),
+        {
+            "name": name,
+            "description": description,
+            "args_schema": args_schema or ToolInput,
+            "_run": lambda self, **kwargs: func(**kwargs)
+        }
+    )()
+
+
 __all__ = [
-    # 基础类
     "BaseTool",
-    "SyncTool",
     "AsyncTool",
-    
-    # 数据模型
+    "SyncTool",
     "ToolMetadata",
     "ToolInput",
     "ToolOutput",
+    "create_tool",
 ]

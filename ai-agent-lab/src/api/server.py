@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # 全局变量
 # ============================================================
 mcp_manager = None
+skill_manager = None
 app_instance: Optional[FastAPI] = None
 
 
@@ -59,10 +60,26 @@ async def lifespan(app: FastAPI):
     4. 检查外部服务状态（如 Prometheus）
     """
     global mcp_manager
+    global skill_manager
 
     logger.info("=" * 60)
     logger.info("Agent API 正在启动...")
     logger.info("=" * 60)
+
+    # 0. 初始化 Skill 管理器
+    logger.info("正在初始化 Skill 管理器...")
+    try:
+        from src.tools.skills import SkillManager
+        skill_manager = SkillManager()
+        skill_count = skill_manager.initialize()
+        logger.info(f"✅ Skill 管理器初始化成功，已加载 {skill_count} 个技能")
+    except ModuleNotFoundError as e:
+        logger.warning(f"Skill 管理器初始化失败：缺少依赖模块 {e}")
+        logger.warning("Skill 功能可能不可用，但服务将继续运行")
+        skill_manager = None
+    except Exception as e:
+        logger.warning(f"Skill 管理器初始化失败：{e}")
+        logger.warning("Skill 功能可能不可用，但服务将继续运行")
 
     # 1. 初始化 MCP 管理器（可选功能）
     PROMETHEUS_ENABLED = False
