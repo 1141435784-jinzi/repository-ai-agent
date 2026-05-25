@@ -121,6 +121,24 @@ BM25_WEIGHT: float = 0.4
 SIMILARITY_THRESHOLD: float = 0.3
 
 # ============================================================
+# 短期记忆配置（Short-term Memory）
+# ============================================================
+MEMORY_WINDOW_SIZE: int = int(os.getenv("MEMORY_WINDOW_SIZE", "10"))
+MEMORY_MIN_WINDOW_SIZE: int = int(os.getenv("MEMORY_MIN_WINDOW_SIZE", "3"))
+MEMORY_SEMANTIC_TOP_K: int = int(os.getenv("MEMORY_SEMANTIC_TOP_K", "3"))
+MEMORY_MAX_CONTEXT_TOKENS: int = int(os.getenv("MEMORY_MAX_CONTEXT_TOKENS", "8192"))
+MEMORY_RESERVED_TOKENS: int = int(os.getenv("MEMORY_RESERVED_TOKENS", "1000"))
+MEMORY_MAX_MEMORY_CONTEXT_TOKENS: int = int(os.getenv("MEMORY_MAX_MEMORY_CONTEXT_TOKENS", "1500"))
+MEMORY_COMPACT_CONTEXT_TOKENS: int = int(os.getenv("MEMORY_COMPACT_CONTEXT_TOKENS", "500"))
+
+# ============================================================
+# 长期记忆配置（Long-term Memory）
+# ============================================================
+LONG_MEMORY_SEMANTIC_TOP_K: int = int(os.getenv("LONG_MEMORY_SEMANTIC_TOP_K", "10"))
+LONG_MEMORY_RERANK_TOP_N: int = int(os.getenv("LONG_MEMORY_RERANK_TOP_N", "3"))
+LONG_MEMORY_PROFILE_DIR: str = os.getenv("LONG_MEMORY_PROFILE_DIR", os.path.join(PROJECT_ROOT, "user_profiles"))
+
+# ============================================================
 # 启动校验
 # ============================================================
 def validate_settings() -> None:

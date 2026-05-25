@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from src.agents.workflow import get_async_agent
+from src.agents.workflow import get_async_graph
 from langchain_core.messages import HumanMessage
 
 
@@ -14,7 +14,7 @@ async def run_workflow_example():
     print("=== Agent Workflow 示例 ===")
     
     # 获取工作流
-    workflow = await get_async_agent()
+    workflow = await get_async_graph()
     
     # 准备输入
     input_data = {

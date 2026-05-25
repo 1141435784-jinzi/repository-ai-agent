@@ -200,8 +200,8 @@ async def warm_up_agent():
         
         # 导入并调用 get_async_agent 创建实例
         # 这会触发所有依赖组件的初始化（Embedding、LLM、Memory、Tools 等）
-        from src.agents.workflow import get_async_agent
-        await get_async_agent()
+        from src.agents.workflow import get_async_graph
+        await get_async_graph()
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()

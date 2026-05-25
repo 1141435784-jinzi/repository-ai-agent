@@ -26,16 +26,20 @@ class SessionService:
     def __init__(self):
         self.sessions: Dict[str, dict] = {}
 
-    def create_session(self) -> str:
+    def create_session(self, user_id: str) -> str:
         """
         创建新会话
         
+        Args:
+            user_id: 用户 ID
+            
         Returns:
             str: 会话 ID
         """
-        thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        thread_id = f"thread_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         self.sessions[thread_id] = {
             "thread_id": thread_id,
+            "user_id": user_id,
             "created_at": datetime.now().isoformat(),
             "last_active": datetime.now().isoformat(),
             "status": "active"
@@ -44,34 +48,50 @@ class SessionService:
 
     def get_session(self, thread_id: str) -> Optional[dict]:
         """
-        获取会话信息
+        获取会话信息（自动验证用户归属）
         
         Args:
-            thread_id: 会话 ID
+            thread_id: 会话 ID（格式：thread_{user_id}_{timestamp}）
             
         Returns:
-            dict or None: 会话信息
+            dict or None: 会话信息（仅当会话属于正确用户时返回）
         """
         session = self.sessions.get(thread_id)
         if session:
-            session["last_active"] = datetime.now().isoformat()
-        return session
+            # 从 thread_id 解析用户 ID 并验证归属
+            user_id = self._extract_user_id(thread_id)
+            if session.get("user_id") == user_id:
+                session["last_active"] = datetime.now().isoformat()
+                return session
+        return None
 
-    def delete_session(self, thread_id: str) -> bool:
+    def _extract_user_id(self, thread_id: str) -> str:
+        """从 thread_id 中解析用户 ID"""
+        parts = thread_id.split('_')
+        if len(parts) >= 2:
+            return parts[1]
+        return ""
+
+    def delete_session(self, thread_id: str, user_id: Optional[str] = None) -> bool:
         """
-        删除会话
+        删除会话（自动验证用户归属）
         
         Args:
-            thread_id: 会话 ID
+            thread_id: 会话 ID（格式：thread_{user_id}_{timestamp}）
+            user_id: 用户 ID（可选，用于向后兼容）
             
         Returns:
             bool: 是否删除成功
         """
-        if thread_id in self.sessions:
-            del self.sessions[thread_id]
-            # 同时清除记忆
-            asyncio.create_task(self._clear_memory(thread_id))
-            return True
+        session = self.sessions.get(thread_id)
+        if session:
+            # 如果未提供 user_id，从 thread_id 自动解析
+            actual_user_id = user_id if user_id else self._extract_user_id(thread_id)
+            if session.get("user_id") == actual_user_id:
+                del self.sessions[thread_id]
+                # 同时清除记忆
+                asyncio.create_task(self._clear_memory(thread_id))
+                return True
         return False
 
     async def _clear_memory(self, thread_id: str):

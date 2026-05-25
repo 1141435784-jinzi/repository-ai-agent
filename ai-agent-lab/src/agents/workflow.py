@@ -17,10 +17,10 @@
 START → supervisor → [expert_agent] → tools → supervisor → summary → END
 """
 
-from typing import Annotated, List, Dict, Any, Optional, Literal
+from typing import Annotated, List, Dict, Any, Optional
+from typing_extensions import Literal
 import asyncio
 import logging
-import json
 
 from langchain_core.messages import (
     HumanMessage, SystemMessage, AIMessage, ToolMessage
@@ -32,7 +32,9 @@ from langchain_core.runnables import RunnableConfig
 from typing_extensions import TypedDict
 
 from src.config import MAX_ITERATIONS
-from src.memory import get_async_checkpointer, get_memory_manager
+from src.memory import get_async_checkpointer
+from src.memory.short_term_memory import ShortTermMemoryManager
+from src.memory.long_term_memory import LongTermMemoryManager
 from src.llm.gateway import get_llm
 from src.prompts import SUPERVISOR_PROMPT
 from src.agents.experts import (
@@ -57,15 +59,56 @@ _graph_compile_cache = {}
 # ============================================================
 # 状态定义
 # ============================================================
+# 自定义合并器：区分 None 和空列表/空字符串
+def merge_with_empty(prev, next):
+    """合并函数：允许设置为空列表或空字符串
+    
+    策略：
+    - 如果 next 为 None，保留旧值 prev
+    - 否则用 next 替换 prev（支持直接替换更新）
+    - 适用于需要每次更新都保存最新值的场景（如 messages_context）
+    """
+    if next is None:
+        return prev
+    return next
+
 class AgentState(TypedDict):
-    """增强版多 Agent 状态定义"""
-    messages: Annotated[list, add_messages]
-    memory_context: Annotated[str, lambda prev, next: next if next else prev]
-    route: Annotated[str, lambda prev, next: next if next else prev]
-    current_agent: Annotated[str, lambda prev, next: next if next else prev]
-    execution_plan: Annotated[list, lambda prev, next: next if next else prev]
-    iteration_count: Annotated[int, lambda prev, next: next if next else prev]
-    task_errors: Annotated[list, lambda prev, next: next if next else prev]
+    """企业级多 Agent 状态定义"""
+    from langchain_core.messages import BaseMessage
+    
+    # ========== 消息层 ==========
+    # 原始对话历史（无限增长，仅用于审计和回溯）
+    messages: Annotated[list[BaseMessage], add_messages]
+    # 增强后的上下文消息列表，每次调用时重新构建
+    # 包含：长期记忆(SystemMessage) + 短期记忆(SystemMessage) + 近N轮对话原文
+    # 快照中保存的是当时实际发送给 LLM 的完整上下文
+    messages_context: Annotated[list[BaseMessage], merge_with_empty]
+
+    # ========== 任务层 ==========
+    # 当前路由决策（下一个要执行的 Agent）
+    route: Annotated[str, merge_with_empty]
+    # 当前执行 Agent 名称
+    current_agent: Annotated[str, merge_with_empty]
+    # 任务执行计划（子任务列表及依赖关系）
+    execution_plan: Annotated[list, merge_with_empty]
+    # 任务执行历史（已完成任务的记录）
+    task_history: Annotated[list, merge_with_empty]
+    # 迭代计数（防止无限循环）
+    iteration_count: Annotated[int, merge_with_empty]
+    # 任务执行错误记录
+    task_errors: Annotated[list, merge_with_empty]
+
+    # ========== 系统层 ==========
+    # 会话唯一标识（格式：thread_{user_id}_{timestamp}）
+    thread_id: Annotated[str, merge_with_empty]
+    # 用户标识
+    user_id: Annotated[str, merge_with_empty]
+    # 会话创建时间
+    created_at: Annotated[str, merge_with_empty]
+    # 最后更新时间
+    last_updated: Annotated[str, merge_with_empty]
+    # 工具调用历史（审计用）
+    tool_call_history: Annotated[list, merge_with_empty]
 
 
 # ============================================================
@@ -266,17 +309,22 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
                     "attempts": 0
                 }]
 
+            # 重新计算任务状态（因为 plan 已更新）
+            completed_tasks = [t for t in plan if t.get("status") == "completed"]
+            pending_tasks = [t for t in plan if t.get("status") == "pending"]
+            in_progress_tasks = [t for t in plan if t.get("status") == "in_progress"]
+
         # 2️⃣ 判断是否需要总结（所有任务完成或达到最大迭代）
-        iteration_count = state.get("iteration_count", 0)
+        iteration_count = state.get("iteration_count", 0) + 1
         if iteration_count >= MAX_ITERATIONS:
             workflow_logger.node_exit("supervisor", thread_id, "决策：达到最大迭代次数，总结")
-            return {"route": "summary", "execution_plan": plan}
+            return {"route": "summary", "execution_plan": plan, "iteration_count": iteration_count}
         
         # 检查是否所有任务完成
         all_completed = len(completed_tasks) == len(plan)
         if all_completed:
             workflow_logger.node_exit("supervisor", thread_id, "决策：所有任务完成，总结")
-            return {"route": "summary", "execution_plan": plan}
+            return {"route": "summary", "execution_plan": plan, "iteration_count": iteration_count}
 
         # 3️⃣ 检查是否有任务需要纠错或补发
         if task_errors:
@@ -333,31 +381,22 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
             return {
                 "route": target_agent,
                 "current_agent": target_agent,
-                "execution_plan": new_plan
+                "execution_plan": new_plan,
+                "iteration_count": iteration_count,
             }
 
         # 6️⃣ 默认路由到 agent_tech（通用专家）
         workflow_logger.node_exit("supervisor", thread_id, "路由到: agent_tech (默认)")
-        return {"route": "agent_tech", "current_agent": "agent_tech", "execution_plan": plan}
+        return {
+            "route": "agent_tech", 
+            "current_agent": "agent_tech", 
+            "execution_plan": plan,
+            "iteration_count": iteration_count,
+        }
 
     except Exception as e:
         workflow_logger.error(thread_id, "supervisor", e)
-        return {"route": "agent_tech", "current_agent": "agent_tech"}
-
-
-def _build_prompt_with_memory(state: AgentState, prompt_template, messages: list) -> list:
-    """构建带记忆上下文的提示词"""
-    prompt_messages = prompt_template.invoke({"messages": messages})
-
-    memory_ctx = state.get("memory_context")
-    if memory_ctx:
-        sys_msg = prompt_messages.messages[0]
-        prompt_messages.messages[0] = SystemMessage(
-            content=f"{sys_msg.content}\n\n## 历史上下文\n{memory_ctx}"
-        )
-
-    return prompt_messages.messages
-
+        return {"route": "agent_tech", "current_agent": "agent_tech", "iteration_count": iteration_count}
 
 async def _build_agent_response(
     state: AgentState,
@@ -372,12 +411,39 @@ async def _build_agent_response(
     workflow_logger.node_enter("agent_response", thread_id)
 
     try:
-        # 获取用户查询
-        cleaned_msgs = state["messages"]
-        if not cleaned_msgs:
-            return {"messages": [AIMessage(content="未收到用户消息")]}
+        # 获取压缩后的消息上下文（动态压缩）
+        messages = state["messages"]
         
-        user_query = str(cleaned_msgs[-1].content) if hasattr(cleaned_msgs[-1], 'content') else str(cleaned_msgs[-1])
+        # 加载并注入长期记忆上下文
+        user_id = config.get("configurable", {}).get("user_id")
+        long_term_memory_context = ""
+        if user_id:
+            try:
+                long_term_memory = LongTermMemoryManager()
+                user_query = str(messages[-1].content) if messages else ""
+                long_term_memory_context = long_term_memory.build_memory_context(user_id, user_query)
+            except Exception as e:
+                logger.error(f"加载长期记忆失败: {e}")
+        
+        # 使用短期记忆管理器处理消息（动态压缩 + 语义检索）
+        try:
+            memory_manager = ShortTermMemoryManager()
+            compressed_msgs = memory_manager.process_memory(
+                messages=messages,
+                thread_id=thread_id,
+                current_query=str(messages[-1].content) if messages else "",
+            )
+        except Exception as e:
+            logger.error(f"加载短期记忆失败: {e}")
+            compressed_msgs = messages if messages else []
+        
+        # 注入长期记忆上下文到消息列表
+        if long_term_memory_context:
+            long_term_memory_message = SystemMessage(content=f"【长期记忆】\n{long_term_memory_context}")
+            compressed_msgs = [long_term_memory_message] + compressed_msgs
+        
+        if not compressed_msgs:
+            return {"messages": [AIMessage(content="未收到用户消息")]}
 
         # 获取当前任务
         plan = state.get("execution_plan", [])
@@ -392,6 +458,7 @@ async def _build_agent_response(
         # 调用专家的 process() 方法
         result = await expert.process(
             query=user_query,
+            messages=compressed_msgs,
             config=config,
             context={
                 "execution_plan": plan,
@@ -400,22 +467,49 @@ async def _build_agent_response(
         )
 
         # 处理工具调用
-        if result.get("needs_tool_execution") and result.get("tool_calls"):
-            for tc in result["tool_calls"]:
+        needs_tool_execution = result.get("needs_tool_execution", False)
+        tool_calls = result.get("tool_calls", [])
+        
+        if needs_tool_execution and tool_calls:
+            for tc in tool_calls:
                 tc_name = tc.get("name", "unknown") if isinstance(tc, dict) else str(tc)
                 workflow_logger.tool_execution(thread_id, tc_name, tc.get("args", {}) if isinstance(tc, dict) else {})
 
         # 构建响应消息
         response_content = result.get("response", "")
-        tool_calls = result.get("tool_calls", [])
         
         # 创建带工具调用的响应消息
+        # 确保工具调用格式符合 LangChain 要求（必须包含 id 字段）
+        from langchain_core.messages import ToolCall
+        formatted_tool_calls = []
+        for i, tc in enumerate(tool_calls):
+            if isinstance(tc, dict):
+                # 添加必要的 id 字段
+                formatted_tool_calls.append(ToolCall(
+                    id=str(i),
+                    name=tc.get("name", ""),
+                    args=tc.get("args", {})
+                ))
+            elif hasattr(tc, 'name') and hasattr(tc, 'args'):
+                # 如果已经是 ToolCall 对象，确保有 id
+                if hasattr(tc, 'id') and tc.id:
+                    formatted_tool_calls.append(tc)
+                else:
+                    formatted_tool_calls.append(ToolCall(
+                        id=str(i),
+                        name=tc.name,
+                        args=tc.args
+                    ))
+        
         resp = AIMessage(content=response_content)
-        if tool_calls:
-            resp.tool_calls = tool_calls
+        if formatted_tool_calls:
+            resp.tool_calls = formatted_tool_calls
 
         workflow_logger.node_exit("agent_response", thread_id, f"响应长度: {len(response_content)}")
-        return {"messages": [resp]}
+        return {
+            "messages": [resp],
+            "messages_context": compressed_msgs,
+        }
 
     except Exception as e:
         workflow_logger.error(thread_id, "agent_response", e)
@@ -516,13 +610,32 @@ async def tools_node(state: AgentState, config: RunnableConfig) -> dict:
 # 总结节点
 # ============================================================
 async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
-    """最终总结节点"""
+    """最终总结节点 - 仅在任务完成时清理状态"""
     thread_id = config.get("configurable", {}).get("thread_id", "default")
+    user_id = config.get("configurable", {}).get("user_id")
     workflow_logger.node_enter("summary", thread_id)
 
     try:
         messages = state["messages"]
         plan = state.get("execution_plan", [])
+        
+        # 保存对话到长期记忆
+        if user_id:
+            try:
+                long_term_memory = LongTermMemoryManager()
+                human_msgs = [m.content for m in messages if isinstance(m, HumanMessage)]
+                ai_msgs = [m.content for m in messages if isinstance(m, AIMessage) and not m.tool_calls]
+                
+                if human_msgs and ai_msgs:
+                    last_human = human_msgs[-1]
+                    last_ai = ai_msgs[-1]
+                    long_term_memory.save_conversation_turn(user_id, last_human, last_ai)
+                    logger.info(f"已保存对话到长期记忆: user_id={user_id}")
+            except Exception as e:
+                logger.error(f"保存长期记忆失败: {e}")
+        
+        # 检查是否所有任务都已完成
+        all_tasks_completed = plan and all(t.get("status") == "completed" for t in plan)
         
         # 如果有多个任务，尝试合并结果
         if plan and len(plan) > 1:
@@ -536,7 +649,18 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
             if len(ai_messages) > 1:
                 combined_content = "\n\n".join([f"📌 {m.content}" for m in ai_messages])
                 workflow_logger.node_exit("summary", thread_id, f"合并了 {len(ai_messages)} 条子任务回复")
-                return {"messages": [AIMessage(content=combined_content)]}
+                
+                if all_tasks_completed:
+                    return {
+                        "messages": [AIMessage(content=combined_content)],
+                        "execution_plan": [],
+                        "iteration_count": 0,
+                        "task_errors": [],
+                        "route": "",
+                        "current_agent": ""
+                    }
+                else:
+                    return {"messages": [AIMessage(content=combined_content)]}
 
         # 找最后一条有意义的回复
         last_meaningful_msg = next(
@@ -546,11 +670,33 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
 
         if last_meaningful_msg:
             workflow_logger.node_exit("summary", thread_id, "使用最终回复")
-            return {"messages": [last_meaningful_msg]}
+            
+            if all_tasks_completed:
+                return {
+                    "messages": [last_meaningful_msg],
+                    "execution_plan": [],
+                    "iteration_count": 0,
+                    "task_errors": [],
+                    "route": "",
+                    "current_agent": ""
+                }
+            else:
+                return {"messages": [last_meaningful_msg]}
 
         summary_msg = AIMessage(content="感谢您的提问！如有其他问题，请随时告诉我。")
         workflow_logger.node_exit("summary", thread_id, "生成默认总结")
-        return {"messages": [summary_msg]}
+        
+        if all_tasks_completed:
+            return {
+                "messages": [summary_msg],
+                "execution_plan": [],
+                "iteration_count": 0,
+                "task_errors": [],
+                "route": "",
+                "current_agent": ""
+            }
+        else:
+            return {"messages": [summary_msg]}
 
     except Exception as e:
         workflow_logger.error(thread_id, "summary", e)
@@ -583,11 +729,6 @@ def should_call_tools(state: AgentState) -> Literal["tools", "supervisor"]:
     
     if has_tool_calls:
         return "tools"
-    
-    if isinstance(last_msg, ToolMessage):
-        iteration_count = state.get("iteration_count", 0) + 1
-        state["iteration_count"] = iteration_count
-        return "supervisor"
     
     return "supervisor"
 
@@ -651,22 +792,17 @@ def _build_graph() -> StateGraph:
 # ============================================================
 # 异步图构建
 # ============================================================
-async def build_async_agent_graph(*, config: dict | None = None):
-    global _graph_compile_cache
-    graph_id = "default"
-    
-    if graph_id in _graph_compile_cache:
-        return _graph_compile_cache[graph_id]
-
+async def build_async_agent_graph(
+    config: RunnableConfig | None = None
+) -> StateGraph:
+    # 你的构建逻辑
     graph = _build_graph()
     checkpointer = await get_async_checkpointer()
-    compiled_graph = graph.compile(checkpointer=checkpointer)
-
-    _graph_compile_cache[graph_id] = compiled_graph
-    return compiled_graph
+    compiled = graph.compile(checkpointer=checkpointer)
+    return compiled
 
 
-async def get_async_agent(graph_id: str = "default"):
+async def get_async_graph(graph_id: str = "default"):
     """获取异步执行图实例"""
     global _async_agent
 

@@ -20,7 +20,6 @@ from .session_service import SessionService
 from .tool_service import ToolService
 from .rag_service import RagService
 from .memory_service import MemoryService
-from .expert_service import ExpertService
 
 __all__ = [
     "ChatService",
@@ -28,5 +27,4 @@ __all__ = [
     "ToolService",
     "RagService",
     "MemoryService",
-    "ExpertService",
 ]

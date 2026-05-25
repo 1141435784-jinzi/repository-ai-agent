@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -31,19 +31,27 @@ router = APIRouter(prefix="/chat")
 class ChatRequest(BaseModel):
     """聊天请求体"""
     message: str = Field(..., description="用户消息")
-    thread_id: Optional[str] = Field(None, description="会话线程 ID")
+    user_id: str = Field(..., description="用户 ID")
+    thread_id: str = Field(..., description="会话线程 ID")
 
 
 class ChatResponse(BaseModel):
     """聊天响应体"""
     response: str = Field(..., description="AI 响应")
+    user_id: str = Field(..., description="用户 ID")
     thread_id: str = Field(..., description="会话线程 ID")
     sources: list = Field(default_factory=list, description="引用的知识库来源")
     found_in_kb: bool = Field(False, description="是否在知识库中找到相关信息")
 
 
+class SessionRequest(BaseModel):
+    """新建会话请求体"""
+    user_id: str = Field(..., description="用户 ID")
+
+
 class SessionResponse(BaseModel):
     """新建会话响应体"""
+    user_id: str = Field(..., description="用户 ID")
     thread_id: str = Field(..., description="新创建的会话 ID")
 
 
@@ -52,18 +60,20 @@ async def chat_stream(request: ChatRequest):
     """流式聊天接口 - 实时返回AI响应"""
     try:
         chat_service = ChatService()
-        return await chat_service.stream_chat(request.message, request.thread_id)
+        return await chat_service.stream_chat(request.message, request.user_id, request.thread_id)
     
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/session/new", response_model=SessionResponse)
-async def create_session():
+async def create_session(request: SessionRequest):
     """创建新会话"""
     session_service = SessionService()
-    thread_id = session_service.create_session()
-    return SessionResponse(thread_id=thread_id)
+    thread_id = session_service.create_session(request.user_id)
+    return SessionResponse(user_id=request.user_id, thread_id=thread_id)
 
 
 @router.get("/session/{thread_id}")
@@ -72,15 +82,16 @@ async def get_session(thread_id: str):
     session_service = SessionService()
     session = session_service.get_session(thread_id)
     if not session:
-        raise HTTPException(status_code=404, detail=f"会话不存在: {thread_id}")
+        raise HTTPException(status_code=404, detail=f"会话不存在或无权访问: {thread_id}")
     return session
 
 
 @router.delete("/session/{thread_id}")
 async def delete_session(thread_id: str):
     """删除会话"""
+    user_id = _extract_user_id(thread_id)
     session_service = SessionService()
-    success = session_service.delete_session(thread_id)
+    success = session_service.delete_session(thread_id, user_id)
     if not success:
-        raise HTTPException(status_code=404, detail=f"会话不存在: {thread_id}")
+        raise HTTPException(status_code=404, detail=f"会话不存在或无权删除: {thread_id}")
     return {"success": True, "message": f"会话已删除: {thread_id}"}

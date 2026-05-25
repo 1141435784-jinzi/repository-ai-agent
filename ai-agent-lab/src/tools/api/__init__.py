@@ -108,20 +108,32 @@ class ToolAPI:
             input_model = tool_class.input_schema
             output_model = tool_class.output_schema
             
-            # 创建包装函数
-            async def _wrapped_call(tool_instance=tool_instance, **kwargs):
+            # 创建异步包装函数
+            async def _async_wrapped_call(tool_instance=tool_instance, **kwargs):
                 result = await tool_instance.execute(**kwargs)
                 if hasattr(result, 'model_dump'):
                     return result.model_dump()
                 return result
             
+            # 创建同步包装函数（用于同步调用）
+            def _sync_wrapped_call(tool_instance=tool_instance, **kwargs):
+                import asyncio
+                try:
+                    # 检查是否已有运行中的事件循环
+                    loop = asyncio.get_running_loop()
+                    # 如果有运行中的事件循环，使用 create_task 并等待
+                    return loop.run_until_complete(_async_wrapped_call(tool_instance=tool_instance, **kwargs))
+                except RuntimeError:
+                    # 没有运行中的事件循环，使用 asyncio.run
+                    return asyncio.run(_async_wrapped_call(tool_instance=tool_instance, **kwargs))
+            
             # 创建 StructuredTool
             langchain_tool = StructuredTool.from_function(
                 name=tool_class.name,
-                func=_wrapped_call,
+                func=_sync_wrapped_call,
                 description=tool_class.description,
                 args_schema=input_model,
-                coroutine=_wrapped_call
+                coroutine=_async_wrapped_call
             )
             
             langchain_tools.append(langchain_tool)
@@ -130,7 +142,16 @@ class ToolAPI:
         try:
             from src.tools.mcp import get_langchain_tools_from_mcp
             import asyncio
-            mcp_tools = asyncio.run(get_langchain_tools_from_mcp())
+            
+            # 处理异步调用，兼容已有事件循环的情况
+            try:
+                loop = asyncio.get_running_loop()
+                # 如果有运行中的事件循环，使用 run_until_complete
+                mcp_tools = loop.run_until_complete(get_langchain_tools_from_mcp())
+            except RuntimeError:
+                # 没有运行中的事件循环，使用 asyncio.run
+                mcp_tools = asyncio.run(get_langchain_tools_from_mcp())
+            
             langchain_tools.extend(mcp_tools)
         except Exception as e:
             # MCP 未配置或未安装时跳过

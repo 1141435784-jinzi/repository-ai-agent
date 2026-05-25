@@ -44,33 +44,35 @@ if not logger.handlers:
 class ChatService:
     """聊天服务类"""
 
-    async def stream_chat(self, message: str, thread_id: Optional[str] = None):
+    async def stream_chat(self, message: str, user_id: Optional[str] = None, thread_id: Optional[str] = None):
         """
         流式聊天处理
         
         Args:
             message: 用户消息
+            user_id: 用户 ID（企业级会话管理必备）
             thread_id: 会话线程 ID
             
         Returns:
             StreamingResponse: 流式响应
         """
-        from src.agents.workflow import get_async_agent
+        from src.agents.workflow import get_async_graph
         
-        if not thread_id:
-            thread_id = f"thread_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # 企业级验证：user_id 和 thread_id 必须都提供
+        if not user_id or not thread_id:
+            raise ValueError("user_id 和 thread_id 参数必须同时提供")
 
         # ========== 日志：记录对话开始 ==========
         start_time = datetime.now()
         logger.info(f"┌─────────────────────────────────────────────────────────────")
-        logger.info(f"│ [对话开始] ThreadID: {thread_id}")
+        logger.info(f"│ [对话开始] UserID: {user_id or 'N/A'}, ThreadID: {thread_id}")
         logger.info(f"│ [用户提问] {message[:100]}{'...' if len(message) > 100 else ''}")
         logger.info(f"│ [开始时间] {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"└─────────────────────────────────────────────────────────────")
 
         try:
-            # 获取异步 Agent 实例
-            agent_executor = await get_async_agent()
+            # 获取异步 Graph 实例
+            graph_executor = await get_async_graph()
 
             config = {
                 "configurable": {
@@ -82,8 +84,9 @@ class ChatService:
             async def stream_generator():
                 nonlocal start_time
                 
-                # 使用 ainvoke 获取完整响应，然后分块发送模拟流式输出
-                result = await agent_executor.ainvoke(
+                # 使用 astream 获取真正的流式响应
+                full_content = ""
+                async for chunk in graph_executor.astream(
                     {
                         "messages": [("user", message)],
                         "execution_plan": [],
@@ -91,39 +94,32 @@ class ChatService:
                         "task_errors": []
                     },
                     config=config
-                )
-                
-                # 从结果中提取消息内容
-                content = ""
-                if isinstance(result, dict) and "messages" in result:
-                    messages = result["messages"]
-                    if messages:
-                        last_message = messages[-1]
-                        if hasattr(last_message, 'content') and last_message.content:
-                            content = last_message.content
+                ):
+                    # 从 chunk 中提取内容
+                    if isinstance(chunk, dict) and "messages" in chunk:
+                        messages = chunk["messages"]
+                        if messages:
+                            last_message = messages[-1]
+                            if hasattr(last_message, 'content') and last_message.content:
+                                # 提取新增的内容部分（增量输出）
+                                content = last_message.content
+                                delta = content[len(full_content):]
+                                if delta:
+                                    full_content = content
+                                    # 转义特殊字符，避免干扰 SSE 协议解析
+                                    escaped_delta = delta.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+                                    yield f"data: {escaped_delta}\n\n"
                 
                 # ========== 日志：记录最终回答 ==========
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
                 logger.info(f"┌─────────────────────────────────────────────────────────────")
                 logger.info(f"│ [对话结束] ThreadID: {thread_id}")
-                logger.info(f"│ [回答内容] {content[:200]}{'...' if len(content) > 200 else ''}")
-                logger.info(f"│ [回答长度] {len(content)} 字符")
+                logger.info(f"│ [回答内容] {full_content[:200]}{'...' if len(full_content) > 200 else ''}")
+                logger.info(f"│ [回答长度] {len(full_content)} 字符")
                 logger.info(f"│ [耗时] {duration:.2f} 秒")
                 logger.info(f"│ [结束时间] {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 logger.info(f"└─────────────────────────────────────────────────────────────")
-                
-                # 如果有内容，分块发送（模拟流式输出）
-                if content:
-                    # 转义内容中的换行符和特殊字符，避免干扰 SSE 协议解析
-                    escaped_content = content.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
-                    # 按字符分块，每块约50个字符
-                    chunk_size = 50
-                    for i in range(0, len(escaped_content), chunk_size):
-                        chunk = escaped_content[i:i+chunk_size]
-                        yield f"data: {chunk}\n\n"
-                        # 添加微小延迟模拟真实流式
-                        await asyncio.sleep(0.01)
                 
                 # 发送结束标记
                 yield "data: [DONE]\n\n"

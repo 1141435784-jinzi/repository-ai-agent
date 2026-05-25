@@ -41,7 +41,7 @@ from .experts.base import (
 # ============================================================
 from .workflow import (
     AgentState,
-    get_async_agent,
+    get_async_graph,
     initialize_experts,
 )
 
@@ -144,7 +144,7 @@ __all__ = [
     
     # 工作流引擎
     "AgentState",
-    "get_async_agent",
+    "get_async_graph",
     "initialize_experts",
     
     # 工具管理器（新架构）

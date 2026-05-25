@@ -399,6 +399,7 @@
     // 全局状态
     // ============================================================
     const API_BASE = window.location.origin;
+    let userId = null;
     let threadId = null;
     let isStreaming = false;
 
@@ -454,15 +455,17 @@
     // ============================================================
     // 初始化：恢复或创建会话
     // ============================================================
-    // 【知识点】用 localStorage 持久化 thread_id
+    // 【知识点】用 localStorage 持久化 user_id 和 thread_id
     // 刷新页面时优先从 localStorage 恢复，保持同一会话
-    // 只有用户主动点"新会话"才创建新的 thread_id
+    // 只有用户主动点"新会话"才创建新的会话
     async function initSession() {
         // 优先从 localStorage 恢复已有会话
+        const savedUserId = localStorage.getItem('agent_lab_user_id');
         const savedThreadId = localStorage.getItem('agent_lab_thread_id');
-        if (savedThreadId) {
+        if (savedUserId && savedThreadId) {
+            userId = savedUserId;
             threadId = savedThreadId;
-            sessionInfo.textContent = `会话 ID: ${threadId.substring(0, 8)}...（已恢复）`;
+            sessionInfo.textContent = `用户: ${userId.substring(0, 6)}... | 会话: ${threadId.substring(0, 8)}...（已恢复）`;
             return;
         }
         // 没有已保存的会话，创建新的
@@ -471,11 +474,20 @@
 
     async function createNewSession() {
         try {
-            const res = await fetch(`${API_BASE}/chat/session/new`, { method: 'POST' });
+            // 生成唯一的用户 ID（模拟企业级用户标识）
+            userId = `user_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+            
+            const res = await fetch(`${API_BASE}/chat/session/new`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId })
+            });
             const data = await res.json();
             threadId = data.thread_id;
+            
+            localStorage.setItem('agent_lab_user_id', userId);
             localStorage.setItem('agent_lab_thread_id', threadId);
-            sessionInfo.textContent = `会话 ID: ${threadId.substring(0, 8)}...`;
+            sessionInfo.textContent = `用户: ${userId.substring(0, 6)}... | 会话: ${threadId.substring(0, 8)}...`;
         } catch (e) {
             sessionInfo.textContent = '连接失败，请检查后端服务';
             console.error('创建会话失败:', e);
@@ -521,7 +533,7 @@
             const res = await fetch(`${API_BASE}/chat/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, thread_id: threadId, model: modelSelect.value }),
+                body: JSON.stringify({ message: text, user_id: userId, thread_id: threadId, model: modelSelect.value }),
             });
 
             // 移除思考动画
@@ -622,7 +634,7 @@
                 const syncRes = await fetch(`${API_BASE}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, thread_id: threadId, model: modelSelect.value }),
+                    body: JSON.stringify({ message: text, user_id: userId, thread_id: threadId, model: modelSelect.value }),
                 });
                 const syncData = await syncRes.json();
                 bubbleEl.innerHTML = renderMarkdown(syncData.reply || '未获取到回复');

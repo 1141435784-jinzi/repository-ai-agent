@@ -164,15 +164,24 @@ class DomainExpertAgent(ABC):
         common_tools = tool_api.to_langchain_tools()
         if common_tools:
             self._tools.extend(common_tools)
-            print(f"🔧 {self.name} 已加载 {len(common_tools)} 个通用工具")
+            tool_names = ", ".join([t.name for t in common_tools])
+            print(f"🔧 {self.name} 已加载 {len(common_tools)} 个通用工具: {tool_names}")
+            # 输出工具完整信息用于调试
+            for i, tool in enumerate(self._tools):
+                print(f"   [{i+1}] {tool.name}: {tool.description[:50]}...")
+                print(f"       类型: {type(tool).__name__}")
+                if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+                    print(f"       参数: {tool.args_schema.__fields__.keys()}")
+                else:
+                    print(f"       参数: None")
 
-        # 使用 create_agent 创建Agent
+        # 使用 create_agent 创建Agent（生成工具调用信息，由 Supervisor 统一执行）
         self._inner_agent = create_agent(
             model=get_llm(streaming=True),
             tools=self._tools,
             system_prompt=system_prompt,
             middleware=middlewares,
-            interrupt_before=["tools"],
+            # 不设置 interrupt_before，让工具调用信息进入消息，由工作流路由到 tools 节点执行
         )
 
     def _build_system_prompt(self) -> str:
@@ -199,12 +208,14 @@ class DomainExpertAgent(ABC):
 
     async def process(self,
                      query: str,
+                     messages: List[BaseMessage],
                      config: Optional[RunnableConfig] = None,
                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """处理用户查询（异步）
 
         Args:
             query: 用户查询文本
+            messages: 对话历史消息列表
             config: 运行配置
             context: 上下文信息（可选）
 
@@ -220,59 +231,47 @@ class DomainExpertAgent(ABC):
         self._cost_control.reset()
 
         try:
-            # 调用内部Agent
-            result = self._inner_agent.invoke({
-                "messages": [HumanMessage(content=query)]
-            })
-        except Exception as e:
-            # 处理 GraphInterrupt 异常（当设置了 interrupt_before=["tools"] 时会触发）
-            from langgraph.errors import GraphInterrupt
+            # 调用内部Agent（生成工具调用信息，由 Supervisor 统一执行）
+            result = await self._inner_agent.ainvoke(
+                {"messages": messages},
+                config=config,
+            )
             
-            if isinstance(e, GraphInterrupt):
-                # 中断发生时，返回需要工具执行的状态
-                print(f"⚠️ {self.name} 需要执行工具调用，返回中断状态")
-                return {
-                    "response": "",
-                    "agent_type": self.name,
-                    "needs_tool_execution": True,
-                    "tool_calls": [],
-                    "sources": [],
-                    "found_in_kb": False,
-                    "metadata": {
-                        "expertise_level": "expert",
-                        "interrupted": True,
-                        **self.domain_metadata
-                    }
-                }
+            # 提取响应
+            response_content = ""
+            tool_calls = []
+            if hasattr(result, 'get'):
+                result_messages = result.get("messages", [])
+                if result_messages:
+                    last_msg = result_messages[-1]
+                    response_content = getattr(last_msg, 'content', str(last_msg))
+                    if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                        tool_calls = last_msg.tool_calls
+                        print(f"✅ {self.name} 生成工具调用: {len(tool_calls)} 个")
             else:
-                # 其他异常重新抛出
-                raise
+                response_content = str(result)
 
-        # 提取响应
-        response_content = ""
-        tool_calls = []
-        if hasattr(result, 'get'):
-            messages = result.get("messages", [])
-            if messages:
-                last_msg = messages[-1]
-                response_content = getattr(last_msg, 'content', str(last_msg))
-                if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                    tool_calls = last_msg.tool_calls
-        else:
-            response_content = str(result)
-
-        return {
-            "response": response_content,
-            "agent_type": self.name,
-            "needs_tool_execution": len(tool_calls) > 0,
-            "tool_calls": tool_calls,
-            "sources": [],
-            "found_in_kb": True,
-            "metadata": {
-                "expertise_level": "expert",
-                **self.domain_metadata
+            return {
+                "response": response_content,
+                "agent_type": self.name,
+                "needs_tool_execution": len(tool_calls) > 0,
+                "tool_calls": tool_calls,
+                "sources": [],
+                "found_in_kb": False,
+                "metadata": {
+                    "expertise_level": "expert",
+                    "interrupted": False,
+                    **self.domain_metadata
+                }
             }
-        }
+            
+        except Exception as e:
+            import traceback
+            print(f"\n❌ {self.name} 调用内部Agent异常:")
+            print(f"   异常类型: {type(e).__name__}")
+            print(f"   异常消息: {str(e)}")
+            print(f"   异常详情:\n{traceback.format_exc()}")
+            raise
 
     def register_tools(self, tools: List[BaseTool]) -> None:
         """注册工具
