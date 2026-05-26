@@ -30,31 +30,6 @@
         "describe_table"
       ]
     },
-    "sqlite": {
-      "command": "mcp-server-sqlite",
-      "args": [],
-      "env": {
-        "SQLITE_DB_PATH": "./data/checkpoints.db"
-      },
-      "disabled": true,
-      "autoApprove": [
-        "query",
-        "list_tables",
-        "describe_table"
-      ]
-    },
-    "weather": {
-      "command": "mcp-server-weather",
-      "args": [
-        "--api_key",
-        "f08b3a92229d9e9acc8914f0046c1109"
-      ],
-      "env": {},
-      "disabled": true,
-      "autoApprove": [
-        "query_weather"
-      ]
-    },
     "hello-world": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/macsymwang/hello-mcp-server.git", "hello-mcp-server"],

@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 import time
-from typing import Dict, Any, Optional, Type
+from typing import Any, ClassVar, Dict, Optional, Type
 from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
@@ -169,8 +169,8 @@ class CreatePaymentOutput(BaseModel):
 class CreatePaymentTool(BaseTool):
     name = "create_payment"
     description = "创建支付订单，支持微信支付和支付宝支付（模拟）"
-    args_schema: Type[BaseModel] = CreatePaymentInput
-    metadata = {"category": "payment", "tags": ["payment", "wechat", "alipay"]}
+    args_schema: ClassVar[Type[BaseModel]] = CreatePaymentInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "payment", "tags": ["payment", "wechat", "alipay"]}
 
     async def _arun(self, amount: float, payment_method: PaymentMethod,
                     description: str = "商品购买", currency: str = "CNY",
@@ -221,8 +221,8 @@ class ProcessPaymentOutput(BaseModel):
 class ProcessPaymentTool(BaseTool):
     name = "process_payment"
     description = "处理支付（模拟支付流程）"
-    args_schema: Type[BaseModel] = ProcessPaymentInput
-    metadata = {"category": "payment", "tags": ["payment", "process"]}
+    args_schema: ClassVar[Type[BaseModel]] = ProcessPaymentInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "payment", "tags": ["payment", "process"]}
 
     async def _arun(self, order_id: str) -> ProcessPaymentOutput:
         order = await _payment_db.get_order(order_id)
@@ -281,8 +281,8 @@ class QueryPaymentOutput(BaseModel):
 class QueryPaymentTool(BaseTool):
     name = "query_payment"
     description = "查询支付状态"
-    args_schema: Type[BaseModel] = QueryPaymentInput
-    metadata = {"category": "payment", "tags": ["payment", "query"]}
+    args_schema: ClassVar[Type[BaseModel]] = QueryPaymentInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "payment", "tags": ["payment", "query"]}
 
     async def _arun(self, order_id: str) -> QueryPaymentOutput:
         order = await _payment_db.get_order(order_id)
@@ -330,8 +330,8 @@ class RefundPaymentOutput(BaseModel):
 class RefundPaymentTool(BaseTool):
     name = "refund_payment"
     description = "退款（模拟退款流程）"
-    args_schema: Type[BaseModel] = RefundPaymentInput
-    metadata = {"category": "payment", "tags": ["payment", "refund"]}
+    args_schema: ClassVar[Type[BaseModel]] = RefundPaymentInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "payment", "tags": ["payment", "refund"]}
 
     async def _arun(self, order_id: str, refund_amount: Optional[float] = None) -> RefundPaymentOutput:
         result = await _payment_db.refund_order(order_id, refund_amount)

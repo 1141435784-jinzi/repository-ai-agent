@@ -57,7 +57,7 @@ class ToolRegistry:
         self._initialized = True
         logger.info("工具注册中心已初始化")
     
-    async def register_tool(self, tool_class: Type[BaseTool]) -> bool:
+    def register_tool(self, tool_class: Type[BaseTool]) -> bool:
         """
         注册工具类
         
@@ -96,7 +96,7 @@ class ToolRegistry:
         logger.info(f"工具 {tool_name} 注册成功")
         return True
     
-    async def unregister_tool(self, tool_name: str) -> bool:
+    def unregister_tool(self, tool_name: str) -> bool:
         """
         注销工具
         
@@ -365,18 +365,8 @@ def register_tool(cls: Type[BaseTool]) -> Type[BaseTool]:
         class MyTool(BaseTool):
             ...
     """
-    # 使用同步方式注册，避免模块加载时没有事件循环的问题
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(tool_registry.register_tool(cls))
-        else:
-            # 同步运行注册
-            asyncio.run(tool_registry.register_tool(cls))
-    except RuntimeError:
-        # 没有运行中的事件循环，使用同步方式
-        asyncio.run(tool_registry.register_tool(cls))
+    # 直接同步注册（无异步操作）
+    tool_registry.register_tool(cls)
     return cls
 
 

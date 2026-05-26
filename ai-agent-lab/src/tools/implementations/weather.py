@@ -5,7 +5,7 @@
 """
 
 import aiohttp
-from typing import Optional, List, Dict, Any, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -72,8 +72,8 @@ class WeatherTool(BaseTool):
 
     name = "weather"
     description = "查询中国城市天气，支持中文城市名（如：北京、上海、广州）。提供实时天气、未来6小时预报和未来3天预报。无需 API key。"
-    args_schema: Type[BaseModel] = WeatherInput
-    metadata = {
+    args_schema: ClassVar[Type[BaseModel]] = WeatherInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {
         "category": "api",
         "tags": ["weather", "china", "forecast"],
     }

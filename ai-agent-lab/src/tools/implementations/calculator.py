@@ -5,7 +5,7 @@
 """
 
 import math
-from typing import Optional, Type
+from typing import Any, ClassVar, Dict, Optional, Type
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool
@@ -34,8 +34,8 @@ class CalculatorTool(BaseTool):
 
     name = "calculator"
     description = "执行数学表达式计算，支持 Python 语法，内置 math 模块函数。例如：'2 + 3 * 4'、'sqrt(16)'、'pow(2, 10)'、'(10 + 5) / 3'、'sin(pi/2)'。"
-    args_schema: Type[BaseModel] = CalculatorInput
-    metadata = {
+    args_schema: ClassVar[Type[BaseModel]] = CalculatorInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {
         "category": "utility",
         "tags": ["math", "calculation", "arithmetic"],
     }

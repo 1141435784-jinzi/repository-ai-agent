@@ -16,6 +16,7 @@
 5. 可观测性：提供统一的监控接口
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from langchain.agents import create_agent
@@ -95,7 +96,7 @@ class DomainExpertAgent(ABC):
         self._create_rag_tool()
 
         # 创建内部Agent（基于 create_agent）
-        self._create_inner_agent()
+        await self._create_inner_agent()
 
         self._initialized = True
         print(f"✅ {self.name} 初始化完成")
@@ -136,7 +137,7 @@ class DomainExpertAgent(ABC):
         capabilities_str = "、".join(self.capabilities[:5])
         return f"查询{self.description}相关的知识库。适用于：{capabilities_str}等问题的知识检索。"
 
-    def _create_inner_agent(self) -> None:
+    async def _create_inner_agent(self) -> None:
         """创建基于 create_agent 的内部Agent实例
 
         集成Middleware：审计日志、成本控制、摘要
@@ -161,7 +162,8 @@ class DomainExpertAgent(ABC):
 
         # 获取通用工具并添加到专家的工具列表中
         # 通用工具包括：计算器、天气、汇率、票务预订等
-        common_tools = tool_api.to_langchain_tools()
+        # 直接调用异步版本，避免在异步上下文中创建新事件循环
+        common_tools = await tool_api.to_langchain_tools()
         if common_tools:
             self._tools.extend(common_tools)
             tool_names = ", ".join([t.name for t in common_tools])
@@ -265,8 +267,8 @@ class DomainExpertAgent(ABC):
             print(f"   异常详情:\n{traceback.format_exc()}")
             raise
 
-    def register_tools(self, tools: List[BaseTool]) -> None:
-        """注册工具
+    async def register_tools(self, tools: List[BaseTool]) -> None:
+        """注册工具（异步）
 
         Args:
             tools: 工具列表
@@ -276,7 +278,7 @@ class DomainExpertAgent(ABC):
 
         # 如果已初始化，重新创建内部Agent以包含新工具
         if self._initialized:
-            self._create_inner_agent()
+            await self._create_inner_agent()
 
     def get_metadata(self) -> Dict[str, Any]:
         """获取Agent元数据

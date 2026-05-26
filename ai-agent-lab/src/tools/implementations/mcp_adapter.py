@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import re
-from typing import Dict, Any, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type
 from dataclasses import dataclass, field
 import time
 
@@ -283,8 +283,8 @@ class MCPToolOutput(ToolOutput):
 class MCPToolWrapper(BaseTool):
     name = "mcp_tool"
     description = "调用 MCP (Model Context Protocol) 工具"
-    args_schema: Type[BaseModel] = MCPToolInput
-    metadata = {"category": "mcp", "tags": ["mcp", "external", "plugin"]}
+    args_schema: ClassVar[Type[BaseModel]] = MCPToolInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "mcp", "tags": ["mcp", "external", "plugin"]}
 
     async def _arun(self, tool_name: str, kwargs: Dict[str, Any] = {}) -> MCPToolOutput:
         try:

@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 import time
-from typing import Dict, Any, Optional, Type
+from typing import Any, ClassVar, Dict, Optional, Type
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -92,8 +92,8 @@ class FlightBookingOutput(BaseModel):
 class FlightBookingTool(BaseTool):
     name = "book_flight"
     description = "预订机票，支持国内主要城市"
-    args_schema: Type[BaseModel] = FlightBookingInput
-    metadata = {"category": "booking", "tags": ["flight", "booking", "travel"]}
+    args_schema: ClassVar[Type[BaseModel]] = FlightBookingInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["flight", "booking", "travel"]}
 
     async def _arun(self, departure_city: str, arrival_city: str, departure_date: str,
                     departure_time: str, arrival_time: str, flight_number: str,
@@ -139,8 +139,8 @@ class CancelFlightOutput(BaseModel):
 class CancelFlightTool(BaseTool):
     name = "cancel_flight"
     description = "取消机票预订"
-    args_schema: Type[BaseModel] = CancelFlightInput
-    metadata = {"category": "booking", "tags": ["flight", "cancel", "refund"]}
+    args_schema: ClassVar[Type[BaseModel]] = CancelFlightInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["flight", "cancel", "refund"]}
 
     async def _arun(self, booking_id: str) -> CancelFlightOutput:
         booking = await _db.get_booking(booking_id)
@@ -191,8 +191,8 @@ class QueryFlightOutput(BaseModel):
 class QueryFlightTool(BaseTool):
     name = "query_flight"
     description = "查询机票预订状态"
-    args_schema: Type[BaseModel] = QueryFlightInput
-    metadata = {"category": "booking", "tags": ["flight", "query"]}
+    args_schema: ClassVar[Type[BaseModel]] = QueryFlightInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["flight", "query"]}
 
     async def _arun(self, booking_id: str) -> QueryFlightOutput:
         booking = await _db.get_booking(booking_id)
@@ -252,8 +252,8 @@ class TrainBookingOutput(BaseModel):
 class TrainBookingTool(BaseTool):
     name = "book_train"
     description = "预订高铁票，支持国内主要城市"
-    args_schema: Type[BaseModel] = TrainBookingInput
-    metadata = {"category": "booking", "tags": ["train", "booking", "travel"]}
+    args_schema: ClassVar[Type[BaseModel]] = TrainBookingInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["train", "booking", "travel"]}
 
     async def _arun(self, departure_city: str, arrival_city: str, departure_date: str,
                     departure_time: str, arrival_time: str, train_number: str,
@@ -299,8 +299,8 @@ class CancelTrainOutput(BaseModel):
 class CancelTrainTool(BaseTool):
     name = "cancel_train"
     description = "取消高铁票预订"
-    args_schema: Type[BaseModel] = CancelTrainInput
-    metadata = {"category": "booking", "tags": ["train", "cancel", "refund"]}
+    args_schema: ClassVar[Type[BaseModel]] = CancelTrainInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["train", "cancel", "refund"]}
 
     async def _arun(self, booking_id: str) -> CancelTrainOutput:
         booking = await _db.get_booking(booking_id)
@@ -351,8 +351,8 @@ class QueryTrainOutput(BaseModel):
 class QueryTrainTool(BaseTool):
     name = "query_train"
     description = "查询高铁票预订状态"
-    args_schema: Type[BaseModel] = QueryTrainInput
-    metadata = {"category": "booking", "tags": ["train", "query"]}
+    args_schema: ClassVar[Type[BaseModel]] = QueryTrainInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "booking", "tags": ["train", "query"]}
 
     async def _arun(self, booking_id: str) -> QueryTrainOutput:
         booking = await _db.get_booking(booking_id)

@@ -116,8 +116,13 @@ from src.tools.middleware import (
 from src.tools.api import (
     ToolAPI,
     tool_api,
+    ToolInfo,
+    SkillInfo,
     get_all_tools,
+    get_all_skills,
     get_tool_info,
+    get_tool_info_list,
+    get_skill_info_list,
     to_langchain_tools,
 )
 
@@ -199,8 +204,13 @@ __all__ = [
     # 工具开放接口层
     "ToolAPI",
     "tool_api",
+    "ToolInfo",
+    "SkillInfo",
     "get_all_tools",
+    "get_all_skills",
     "get_tool_info",
+    "get_tool_info_list",
+    "get_skill_info_list",
     "to_langchain_tools",
     
     # 工具实现层 - 实用工具

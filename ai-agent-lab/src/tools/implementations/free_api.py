@@ -1,7 +1,7 @@
 """免费 API 工具实现"""
 
 import aiohttp
-from typing import List, Dict, Any, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool
@@ -36,8 +36,8 @@ class IPInfoOutput(BaseModel):
 class IPInfoTool(BaseTool):
     name = "ip_info"
     description = "获取 IP 地址的详细信息，包括地理位置、ISP、时区等。无需 API key。"
-    args_schema: Type[BaseModel] = IPInfoInput
-    metadata = {"category": "api", "tags": ["ip", "network", "geolocation"]}
+    args_schema: ClassVar[Type[BaseModel]] = IPInfoInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "api", "tags": ["ip", "network", "geolocation"]}
 
     async def _arun(self, ip_address: Optional[str] = None) -> IPInfoOutput:
         url = f"https://ipapi.co/{ip_address}/json/" if ip_address else "https://ipapi.co/json/"
@@ -90,8 +90,8 @@ class ExchangeRateOutput(BaseModel):
 class ExchangeRateTool(BaseTool):
     name = "exchange_rate"
     description = "查询货币汇率并计算兑换金额。支持多种货币。无需 API key。"
-    args_schema: Type[BaseModel] = ExchangeRateInput
-    metadata = {"category": "api", "tags": ["currency", "finance", "exchange"]}
+    args_schema: ClassVar[Type[BaseModel]] = ExchangeRateInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "api", "tags": ["currency", "finance", "exchange"]}
 
     async def _arun(self, base_currency: str = "USD", target_currency: str = "CNY",
                     amount: float = 1.0) -> ExchangeRateOutput:
@@ -145,8 +145,8 @@ class QuoteOutput(BaseModel):
 class RandomQuoteTool(BaseTool):
     name = "random_quote"
     description = "获取随机名言，可按作者或标签筛选。无需 API key。"
-    args_schema: Type[BaseModel] = QuoteInput
-    metadata = {"category": "api", "tags": ["quote", "inspiration", "text"]}
+    args_schema: ClassVar[Type[BaseModel]] = QuoteInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "api", "tags": ["quote", "inspiration", "text"]}
 
     async def _arun(self, author: Optional[str] = None, tags: Optional[str] = None,
                     limit: int = 1) -> QuoteOutput:
@@ -207,8 +207,8 @@ class PublicAPIOutput(BaseModel):
 class PublicAPIsTool(BaseTool):
     name = "public_apis"
     description = "搜索和浏览公共 API 列表，可按类别或关键词筛选。无需 API key。"
-    args_schema: Type[BaseModel] = PublicAPIInput
-    metadata = {"category": "api", "tags": ["api", "directory", "resources"]}
+    args_schema: ClassVar[Type[BaseModel]] = PublicAPIInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "api", "tags": ["api", "directory", "resources"]}
 
     async def _arun(self, category: Optional[str] = None, search: Optional[str] = None,
                     limit: int = 10) -> PublicAPIOutput:
@@ -280,8 +280,8 @@ class PlaceholderImageOutput(BaseModel):
 class PlaceholderImageTool(BaseTool):
     name = "placeholder_image"
     description = "生成占位符图片 URL，可自定义尺寸、颜色和文字。无需 API key。"
-    args_schema: Type[BaseModel] = PlaceholderImageInput
-    metadata = {"category": "api", "tags": ["image", "placeholder", "design"]}
+    args_schema: ClassVar[Type[BaseModel]] = PlaceholderImageInput
+    metadata: ClassVar[Optional[Dict[str, Any]]] = {"category": "api", "tags": ["image", "placeholder", "design"]}
 
     async def _arun(self, width: int = 300, height: int = 200, text: Optional[str] = None,
                     background_color: str = "cccccc", text_color: str = "000000") -> PlaceholderImageOutput:

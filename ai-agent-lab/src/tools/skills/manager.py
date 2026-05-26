@@ -1,28 +1,24 @@
+"""
+Skill 管理器 - 使用自定义实现，完全替代 agent-skills-sdk
+
+兼容 Pydantic v2，避免版本兼容性问题
+"""
+
 import os
 import shutil
 from typing import List, Optional, Dict, Any
 from .models import SkillInfo, SkillStatus
-
-# 尝试导入 agent_skills_sdk，如果失败则设置为 None
-try:
-    from agent_skills_sdk.discovery import SkillDiscovery, SkillParser
-    from agent_skills_sdk import Skill, SkillMetadata
-    SKILL_SDK_AVAILABLE = True
-except ImportError:
-    SKILL_SDK_AVAILABLE = False
-    SkillDiscovery = None
-    SkillParser = None
-    Skill = None
-    SkillMetadata = None
+from .client import SkillClient, SkillMetadata
+from .tool import SkillTool
+from langchain_core.tools import BaseTool
 
 
 class SkillManager:
-    """Skill 管理器 - 基于官方 agent-skills-sdk"""
+    """Skill 管理器 - 基于自定义实现"""
 
     def __init__(self, skills_dir: str = ".agents/skills"):
         self.skills_dir = skills_dir
-        self._discovery = None
-        self._parser = None
+        self._client = SkillClient()
         self._skills_cache: Dict[str, SkillInfo] = {}
 
         # 确保技能目录存在
@@ -30,44 +26,31 @@ class SkillManager:
 
     def initialize(self) -> int:
         """初始化 - 加载所有已安装的 Skill"""
-        # 如果 SDK 不可用，返回空缓存
-        if not SKILL_SDK_AVAILABLE:
-            return 0
-
-        # 创建技能发现器
-        self._discovery = SkillDiscovery(skill_paths=[self.skills_dir])
-
-        # 创建技能解析器
-        self._parser = SkillParser()
-
-        # 加载所有技能到缓存
-        self._refresh_cache()
-
+        # 使用自定义客户端发现技能
+        skills = self._client.discover_skills([self.skills_dir])
+        
+        # 更新缓存
+        self._refresh_cache(skills)
+        
         return len(self._skills_cache)
 
-    def _refresh_cache(self):
+    def _refresh_cache(self, skills: List[SkillMetadata] = None):
         """刷新技能缓存"""
         self._skills_cache = {}
+        
+        if skills is None:
+            skills = self._client.list_skills()
 
-        if not self._discovery:
-            return
-
-        # 发现所有技能 - discover_skills 返回 Skill 对象列表
-        for skill in self._discovery.discover_skills():
-            try:
-                if skill and skill.metadata:
-                    skill_name = skill.metadata.name if skill.metadata.name else os.path.basename(str(skill.skill_md_path.parent))
-                    self._skills_cache[skill_name.lower()] = SkillInfo(
-                        name=skill.metadata.name,
-                        description=skill.metadata.description,
-                        version=skill.metadata.version,
-                        author=skill.metadata.author,
-                        tags=skill.metadata.tags,
-                        install_path=str(skill.skill_md_path.parent),
-                        status=SkillStatus.INSTALLED,
-                    )
-            except Exception as e:
-                print(f"解析技能失败: {e}")
+        for skill in skills:
+            self._skills_cache[skill.name.lower()] = SkillInfo(
+                name=skill.name,
+                description=skill.description,
+                version=skill.version,
+                author=skill.author,
+                tags=skill.tags,
+                install_path=self.skills_dir,
+                status=SkillStatus.INSTALLED,
+            )
 
     def list_skills(self) -> List[SkillInfo]:
         """获取所有已安装的 Skill"""
@@ -135,7 +118,7 @@ class SkillManager:
             shutil.copytree(skill_path, dest_path)
 
             # 刷新缓存
-            self._refresh_cache()
+            self.initialize()
 
             return True
         except Exception as e:
@@ -150,7 +133,8 @@ class SkillManager:
         skill_info = self.get_skill(skill_name)
         if skill_info and skill_info.install_path:
             try:
-                shutil.rmtree(skill_info.install_path)
+                skill_path = os.path.join(skill_info.install_path, skill_name)
+                shutil.rmtree(skill_path)
                 self._skills_cache.pop(skill_name.lower(), None)
                 return True
             except Exception as e:
@@ -175,16 +159,22 @@ class SkillManager:
                                   if s.status == SkillStatus.INSTALLED]),
         }
 
-    def to_langchain_tools(self) -> List:
+    def to_langchain_tools(self) -> List[BaseTool]:
         """将技能转换为 LangChain 工具格式"""
-        if not SKILL_SDK_AVAILABLE:
-            return []
-
-        try:
-            from agent_skills_sdk.adapters.langchain import LangChainAdapter
-
-            adapter = LangChainAdapter(skill_paths=[self.skills_dir])
-            return adapter.as_langchain_tools()
-        except Exception as e:
-            print(f"转换技能为 LangChain 工具失败: {e}")
-            return []
+        tools = []
+        
+        # 获取所有技能
+        skills = self._client.list_skills()
+        
+        for skill in skills:
+            # 为每个技能创建一个工具
+            tool = SkillTool(
+                skill_id=skill.name,
+                name=skill.name,
+                description=skill.description,
+                client=self._client
+            )
+            tools.append(tool)
+        
+        print(f"🎯 已加载 {len(tools)} 个技能")
+        return tools
