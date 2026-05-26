@@ -11,17 +11,13 @@
 5. RandomQuoteTool - 随机名言工具
 6. PublicAPIsTool - 公共 API 列表工具
 7. PlaceholderImageTool - 占位符图片工具
-8. CreatePaymentTool - 创建支付订单工具
-9. ProcessPaymentTool - 处理支付工具
-10. QueryPaymentTool - 查询支付状态工具
-11. RefundPaymentTool - 退款工具
-12. FlightBookingTool - 机票预订工具
-13. CancelFlightTool - 取消机票预订工具
-14. QueryFlightTool - 查询机票预订工具
-15. TrainBookingTool - 高铁票预订工具
-16. CancelTrainTool - 取消高铁票预订工具
-17. QueryTrainTool - 查询高铁票预订工具
-18. MCPToolWrapper - MCP 工具包装器
+8. FlightBookingTool - 机票预订工具
+9. CancelFlightTool - 取消机票预订工具
+10. QueryFlightTool - 查询机票预订工具
+11. TrainBookingTool - 高铁票预订工具
+12. CancelTrainTool - 取消高铁票预订工具
+13. QueryTrainTool - 查询高铁票预订工具
+14. MCPToolWrapper - MCP 工具包装器
 """
 
 # 导入所有工具实现
@@ -33,12 +29,6 @@ from .free_api import (
     RandomQuoteTool,
     PublicAPIsTool,
     PlaceholderImageTool,
-)
-from .payment import (
-    CreatePaymentTool,
-    ProcessPaymentTool,
-    QueryPaymentTool,
-    RefundPaymentTool,
 )
 from .ticket_booking import (
     FlightBookingTool,
@@ -62,12 +52,6 @@ __all__ = [
     "RandomQuoteTool",
     "PublicAPIsTool",
     "PlaceholderImageTool",
-    
-    # 支付工具
-    "CreatePaymentTool",
-    "ProcessPaymentTool",
-    "QueryPaymentTool",
-    "RefundPaymentTool",
     
     # 票务工具
     "FlightBookingTool",

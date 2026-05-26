@@ -30,7 +30,7 @@
 6. 安全性：权限控制和数据脱敏
 
 【使用方式】：
-```python
+python
 # Agent 使用方式（最简）
 from src.tools import tool_api, to_langchain_tools
 
@@ -45,7 +45,7 @@ langchain_tools = to_langchain_tools()
 
 # 创建 Agent
 agent = create_agent(llm, langchain_tools)
-```
+
 
 【目录结构】：
 src/tools/
@@ -67,7 +67,6 @@ src/tools/
     ├── calculator.py     # 数学计算工具
     ├── weather.py        # 天气查询工具
     ├── free_api.py       # 免费 API 工具（IP、汇率、名言等）
-    ├── payment.py        # 模拟支付工具（微信、支付宝）
     ├── ticket_booking.py # 票务预订工具（机票、高铁）
     └── mcp_adapter.py    # MCP 工具适配器
 """
@@ -135,10 +134,6 @@ from src.tools.implementations import (
     RandomQuoteTool,
     PublicAPIsTool,
     PlaceholderImageTool,
-    CreatePaymentTool,
-    ProcessPaymentTool,
-    QueryPaymentTool,
-    RefundPaymentTool,
     FlightBookingTool,
     CancelFlightTool,
     QueryFlightTool,
@@ -223,12 +218,6 @@ __all__ = [
     "RandomQuoteTool",
     "PublicAPIsTool",
     "PlaceholderImageTool",
-    
-    # 工具实现层 - 支付工具
-    "CreatePaymentTool",
-    "ProcessPaymentTool",
-    "QueryPaymentTool",
-    "RefundPaymentTool",
     
     # 工具实现层 - 票务工具
     "FlightBookingTool",

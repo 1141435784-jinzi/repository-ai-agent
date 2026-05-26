@@ -316,16 +316,16 @@
 │  │ · SUPERVISOR  │  │  │  └─ calculator.py          │  │   自动化评估   │     │
 │  │   _PROMPT     │  │  │      (数学计算)             │  │ · Faithfulness│     │
 │  │ · AGENT_PROMPT│  │  ├─ api/ (API工具)            │  │ · Relevancy   │     │
-│  │ · TRAVEL_     │  │  │  ├─ free_apis.py           │  │ · Precision   │     │
-│  │   PROMPT      │  │  │  │   (天气查询)             │  │ · Recall      │     │
-│  │                │  │  │  └─ payment_api.py         │  │                │     │
-│  │ 安全防护：    │  │  │      (支付接口)             │  │                │     │
-│  │ · sanitize    │  │  └─ mcp/ (MCP工具)           │  │                │     │
-│  │   _input()    │  │     ├─ mcp_client.py          │  │                │     │
-│  │   输入校验    │  │     └─ mcp_config.json        │  │                │     │
-│  │ · sanitize    │  │                               │  │                │     │
-│  │   _output()   │  │  ALL_TOOLS 列表                │  │                │     │
-│  │                │  │  注册到 LLM bind_tools()      │  │                │     │
+│  │ · TRAVEL_     │  │  │  └─ free_apis.py           │  │ · Precision   │     │
+│  │   PROMPT      │  │  │      (天气查询)             │  │ · Recall      │     │
+│  │                │  │  └─ mcp/ (MCP工具)           │  │                │     │
+│  │ 安全防护：    │  │     ├─ mcp_client.py          │  │                │     │
+│  │ · sanitize    │  │     └─ mcp_config.json        │  │                │     │
+│  │   _input()    │  │                               │  │                │     │
+│  │   输入校验    │  │  ALL_TOOLS 列表                │  │                │     │
+│  │ · sanitize    │  │  注册到 LLM bind_tools()      │  │                │     │
+│  │   _output()   │  └────────────────────────────────┘  └────────────────┘     │
+│  │                │                                                             │
 │  └────────────────┘  └────────────────────────────────┘  └────────────────┘     │
 │                                                                                  │
 │  ┌──────────────────────────────────────────────────────────────────────────┐    │
@@ -440,8 +440,7 @@ ai-agent-lab/                     # 企业级 AI Agent 项目根目录
 │   │   ├── tool_manager.py      # 动态工具管理器
 │   │   ├── api/                  # API 工具
 │   │   │   ├── __init__.py
-│   │   │   ├── free_apis.py      # 免费 API 工具
-│   │   │   └── payment_api.py    # 支付 API 工具
+│   │   │   └── free_apis.py      # 免费 API 工具
 │   │   ├── local/               # 本地工具
 │   │   │   ├── __init__.py
 │   │   │   └── calculator.py     # 数学计算工具
@@ -664,7 +663,6 @@ ai-agent-lab/                     # 企业级 AI Agent 项目根目录
   - 动态创建 Pydantic 模型
 - **api/**: API 工具
   - `free_apis.py`: 免费 API 工具（天气查询等）
-  - `payment_api.py`: 支付 API 工具
   - 封装 RESTful API 为 LangChain 工具
   - 支持认证、请求重试、错误处理
 - **local/**: 本地工具
@@ -1024,7 +1022,7 @@ python run_server.py
   - 更新 API 路由结构（src/api/routes/）包含 chat、experts、memory、rag、tools 等端点
   - 更新专业 Agent 列表：Agent 技术专家、景点推荐专家、美食推荐专家、交通出行专家、规划预算专家
   - 更新 Prompt 模板列表，新增 agent_plan、agent_travel、agent_finance、tool_assistant 等
-  - 更新工具系统结构，新增 payment_api.py 和 mcp_config_example.json
+  - 更新工具系统结构，新增 mcp_config_example.json
   - 更新 RAG 系统结构，新增 document_service、data_cleaning、incremental_update、file_watcher 等模块
   - 更新知识库结构，新增 knowledge_base_plan 目录（budget_planning.md、budget_guide.md）
   - 更新架构分层说明，反映实际的模块化路由结构
