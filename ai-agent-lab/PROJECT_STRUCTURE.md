@@ -356,6 +356,20 @@ ai-agent-lab/                              # 项目根目录
 | MCP | Model Context Protocol | 外部工具集成、安全沙箱 |
 | REST API | 标准 HTTP 接口 | 第三方服务调用 |
 | 本地函数 | Python 函数 | 内部工具 |
+| Skills | MCP协议封装的技能包 | Claude API、DOCX、PDF、PPTX、XLSX、画布设计、前端设计等企业级工具 |
+
+### 5.5 Skills 技能库
+
+系统内置丰富的 Skills 技能库，位于 `.agents/skills/` 目录：
+
+| 类别 | Skills | 说明 |
+|------|--------|------|
+| **文档处理** | docx, pdf, pptx, xlsx | Office文档和PDF处理 |
+| **API集成** | claude-api | Claude AI API调用 |
+| **设计工具** | canvas-design, frontend-design, algorithmic-art | 设计和艺术生成 |
+| **开发工具** | mcp-builder, skill-creator, webapp-testing | 开发和测试工具 |
+| **企业协作** | brand-guidelines, internal-comms, doc-coauthoring | 团队协作工具 |
+| **其他** | slack-gif-creator, theme-factory | 创意和主题工具 |
 
 ---
 
