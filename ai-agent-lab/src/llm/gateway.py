@@ -281,7 +281,7 @@ def _get_fallback_providers(exclude: str) -> list[LLMProviderConfig]:
 def get_llm(
     temperature: float | None = None, 
     provider: str | None = None,
-    streaming: bool = False,) -> ChatOpenAI:
+    streaming: bool = True,) -> ChatOpenAI:
     """获取 LLM 实例（Gateway 核心方法）
 
     【知识点】Gateway 模式的核心入口：

@@ -21,7 +21,8 @@ def test_scenario_streaming(message: str, description: str):
         response = requests.post(
             f"{BASE_URL}/chat/stream",
             json=data,
-            stream=True
+            stream=True,
+            timeout=300  # 5分钟超时，适应复杂场景
         )
         response.raise_for_status()
         

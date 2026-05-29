@@ -399,6 +399,7 @@
     // 全局状态
     // ============================================================
     const API_BASE = window.location.origin;
+    let userId = null;
     let threadId = null;
     let isStreaming = false;
 
@@ -417,35 +418,54 @@
         try {
             if (typeof marked !== 'undefined' && marked.parse) {
                 // marked v15+：通过第二个参数传配置
-                let html = marked.parse(text, { breaks: true, gfm: true });
+                const options = { 
+                    breaks: true, 
+                    gfm: true,
+                    mangle: false,
+                    headerIds: false
+                };
+                let html = marked.parse(text, options);
+                
+                // 代码高亮
                 if (typeof hljs !== 'undefined') {
                     const temp = document.createElement('div');
                     temp.innerHTML = html;
                     temp.querySelectorAll('pre code').forEach(block => {
-                        hljs.highlightElement(block);
+                        try {
+                            hljs.highlightElement(block);
+                        } catch (e) {
+                            console.warn('代码高亮失败:', e);
+                        }
                     });
                     html = temp.innerHTML;
                 }
+                
+                console.debug('Markdown 渲染成功:', { inputLength: text.length, outputLength: html.length });
                 return html;
+            } else {
+                console.warn('marked 库未加载，降级为纯文本');
             }
         } catch (e) {
             console.warn('Markdown 渲染失败，降级为纯文本:', e);
         }
+        // 降级方案：转义 HTML 并保留换行
         return text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
     }
 
     // ============================================================
     // 初始化：恢复或创建会话
     // ============================================================
-    // 【知识点】用 localStorage 持久化 thread_id
+    // 【知识点】用 localStorage 持久化 user_id 和 thread_id
     // 刷新页面时优先从 localStorage 恢复，保持同一会话
-    // 只有用户主动点"新会话"才创建新的 thread_id
+    // 只有用户主动点"新会话"才创建新的会话
     async function initSession() {
         // 优先从 localStorage 恢复已有会话
+        const savedUserId = localStorage.getItem('agent_lab_user_id');
         const savedThreadId = localStorage.getItem('agent_lab_thread_id');
-        if (savedThreadId) {
+        if (savedUserId && savedThreadId) {
+            userId = savedUserId;
             threadId = savedThreadId;
-            sessionInfo.textContent = `会话 ID: ${threadId.substring(0, 8)}...（已恢复）`;
+            sessionInfo.textContent = `用户: ${userId.substring(0, 6)}... | 会话: ${threadId.substring(0, 8)}...（已恢复）`;
             return;
         }
         // 没有已保存的会话，创建新的
@@ -454,11 +474,20 @@
 
     async function createNewSession() {
         try {
-            const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
+            // 生成唯一的用户 ID（模拟企业级用户标识）
+            userId = `user_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+            
+            const res = await fetch(`${API_BASE}/chat/session/new`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId })
+            });
             const data = await res.json();
             threadId = data.thread_id;
+            
+            localStorage.setItem('agent_lab_user_id', userId);
             localStorage.setItem('agent_lab_thread_id', threadId);
-            sessionInfo.textContent = `会话 ID: ${threadId.substring(0, 8)}...`;
+            sessionInfo.textContent = `用户: ${userId.substring(0, 6)}... | 会话: ${threadId.substring(0, 8)}...`;
         } catch (e) {
             sessionInfo.textContent = '连接失败，请检查后端服务';
             console.error('创建会话失败:', e);
@@ -480,22 +509,19 @@
     }
 
     // ============================================================
-    // 发送消息（SSE 流式）
+    // 发送消息（SSE 流式）- 优化版
     // ============================================================
     async function sendMessage() {
         const text = userInput.value.trim();
         if (!text || isStreaming || !threadId) return;
 
-        // 清除欢迎界面
         const welcome = chatMessages.querySelector('.welcome');
         if (welcome) welcome.remove();
 
-        // 显示用户消息
         appendMessage('user', text);
         userInput.value = '';
         autoResizeTextarea();
 
-        // 显示思考中
         const thinkingEl = appendThinking();
         isStreaming = true;
         sendBtn.disabled = true;
@@ -504,80 +530,103 @@
             const res = await fetch(`${API_BASE}/chat/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, thread_id: threadId, model: modelSelect.value }),
+                body: JSON.stringify({ message: text, user_id: userId, thread_id: threadId, model: modelSelect.value }),
             });
 
-            // 移除思考动画
             thinkingEl.remove();
 
-            // 创建 AI 消息气泡（内容逐步填充）
             const bubbleEl = appendMessage('assistant', '');
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let fullText = '';
-            let buffer = ''; // 新增：用于处理 SSE 分包的缓冲区
+            let buffer = '';
+
+            let pendingText = null;
+            let rafId = null;
+
+            const renderLoop = () => {
+                if (pendingText !== null) {
+                    bubbleEl.innerHTML = renderMarkdown(pendingText);
+                    scrollToBottom();
+                    pendingText = null;
+                }
+                if (isStreaming) {
+                    rafId = requestAnimationFrame(renderLoop);
+                }
+            };
+
+            rafId = requestAnimationFrame(renderLoop);
+
+            const processSSEMessage = (completeData) => {
+                const lines = completeData.split('\n');
+                for (const line of lines) {
+                    let data = line;
+                    if (line.startsWith('data: ')) {
+                        data = line.slice(6);
+                    } else if (line.startsWith('data:')) {
+                        data = line.slice(5);
+                    }
+
+                    if (!data || data.trim() === '' || data.trim() === '[DONE]') continue;
+
+                    if (data.startsWith('[ERROR]')) {
+                        fullText += `\n❌ 错误: ${data.slice(7)}`;
+                        pendingText = fullText;
+                        return;
+                    }
+                    if (data.startsWith('[REPLACE]')) {
+                        fullText = data.slice(9);
+                        pendingText = fullText;
+                        return;
+                    }
+                    if (data.startsWith('[TOOL_START]')) {
+                        try {
+                            const toolData = JSON.parse(data.slice(12));
+                            fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
+                        } catch (e) {}
+                        pendingText = fullText;
+                        return;
+                    }
+                    if (data.startsWith('[TOOL_RESULT]')) {
+                        console.log('Tool Result:', data.slice(13));
+                        return;
+                    }
+                    fullText += data.replace(/\\n/g, '\n');
+                    pendingText = fullText;
+                }
+            };
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 const chunk = decoder.decode(value, { stream: true });
-                buffer += chunk; // 将新到的数据加入缓冲区
+                buffer += chunk;
 
-                // 解析 SSE 数据行
-                // SSE 规范：数据以 \n\n 分隔
-                let boundary = buffer.lastIndexOf('\n\n');
-                if (boundary === -1) continue; // 还没有完整的消息，继续等待
+                while (true) {
+                    const dataStart = buffer.indexOf('data: ');
+                    if (dataStart === -1) break;
 
-                const completeData = buffer.substring(0, boundary);
-                buffer = buffer.substring(boundary + 2); // 剩下的存回缓冲区
+                    const remaining = buffer.substring(dataStart);
+                    const msgEnd = remaining.indexOf('\n\n');
+                    if (msgEnd === -1) break;
 
-                const lines = completeData.split('\n');
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6);
-                    if (data === '[DONE]') continue;
-                    if (data.startsWith('[ERROR]')) {
-                        fullText += `\n❌ 错误: ${data}`;
-                        continue;
-                    }
-                    if (data.startsWith('[REPLACE]')) {
-                        // 安全防护：服务端检测到敏感信息泄露，用安全文本替换
-                        fullText = data.slice(9);
-                        continue;
-                    }
-                    if (data.startsWith('[TOOL_START]')) {
-                        try {
-                            const toolData = JSON.parse(data.slice(12));
-                            // 在 UI 上显示一个精简的工具调用状态
-                            fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
-                        } catch (e) {}
-                        continue;
-                    }
-                    if (data.startsWith('[TOOL_RESULT]')) {
-                        // 隐藏原始工具结果，保持界面整洁
-                        // 如果需要调试，可以在 console 打印
-                        console.log('Tool Result:', data.slice(13));
-                        continue;
-                    }
-                    // 还原服务端转义的换行符
-                    fullText += data.replace(/\\n/g, '\n');
+                    const completeMsg = remaining.substring(0, msgEnd);
+                    buffer = buffer.substring(dataStart + completeMsg.length + 2);
+                    processSSEMessage(completeMsg);
                 }
-                // 每次收到新 token，重新渲染整段 Markdown（实时富文本效果）
-                bubbleEl.innerHTML = renderMarkdown(fullText);
-                scrollToBottom();
             }
 
-            // 流式过程中已实时渲染 Markdown，无需额外处理
+            if (rafId) cancelAnimationFrame(rafId);
+            bubbleEl.innerHTML = renderMarkdown(fullText);
 
-            // 如果流式没拿到内容，降级用同步接口
             if (!fullText) {
                 bubbleEl.textContent = '正在获取回复...';
                 const syncRes = await fetch(`${API_BASE}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, thread_id: threadId, model: modelSelect.value }),
+                    body: JSON.stringify({ message: text, user_id: userId, thread_id: threadId, model: modelSelect.value }),
                 });
                 const syncData = await syncRes.json();
                 bubbleEl.innerHTML = renderMarkdown(syncData.reply || '未获取到回复');

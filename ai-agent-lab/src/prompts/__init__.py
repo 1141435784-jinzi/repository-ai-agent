@@ -42,7 +42,6 @@ from .agent_plan import PLAN_PROMPT
 from .agent_sights import SIGHTS_PROMPT
 from .agent_food import FOOD_PROMPT
 from .agent_transport import TRANSPORT_PROMPT
-from .tool_assistant import TOOL_PROMPT
 from .security import sanitize_input, sanitize_output
 
 # 导出所有公共接口
@@ -53,7 +52,6 @@ __all__ = [
     "SIGHTS_PROMPT",
     "FOOD_PROMPT",
     "TRANSPORT_PROMPT",
-    "TOOL_PROMPT",
     "sanitize_input",
     "sanitize_output",
 ]
