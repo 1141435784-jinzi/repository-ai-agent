@@ -509,22 +509,19 @@
     }
 
     // ============================================================
-    // 发送消息（SSE 流式）
+    // 发送消息（SSE 流式）- 优化版
     // ============================================================
     async function sendMessage() {
         const text = userInput.value.trim();
         if (!text || isStreaming || !threadId) return;
 
-        // 清除欢迎界面
         const welcome = chatMessages.querySelector('.welcome');
         if (welcome) welcome.remove();
 
-        // 显示用户消息
         appendMessage('user', text);
         userInput.value = '';
         autoResizeTextarea();
 
-        // 显示思考中
         const thinkingEl = appendThinking();
         isStreaming = true;
         sendBtn.disabled = true;
@@ -536,99 +533,94 @@
                 body: JSON.stringify({ message: text, user_id: userId, thread_id: threadId, model: modelSelect.value }),
             });
 
-            // 移除思考动画
             thinkingEl.remove();
 
-            // 创建 AI 消息气泡（内容逐步填充）
             const bubbleEl = appendMessage('assistant', '');
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let fullText = '';
-            let buffer = ''; // 新增：用于处理 SSE 分包的缓冲区
-            
-            // SSE 消息处理函数
-            function processSSEMessage(completeData) {
+            let buffer = '';
+
+            let pendingText = null;
+            let rafId = null;
+
+            const renderLoop = () => {
+                if (pendingText !== null) {
+                    bubbleEl.innerHTML = renderMarkdown(pendingText);
+                    scrollToBottom();
+                    pendingText = null;
+                }
+                if (isStreaming) {
+                    rafId = requestAnimationFrame(renderLoop);
+                }
+            };
+
+            rafId = requestAnimationFrame(renderLoop);
+
+            const processSSEMessage = (completeData) => {
                 const lines = completeData.split('\n');
                 for (const line of lines) {
-                    // 【修复】改进 SSE 解析：支持多种数据格式
                     let data = line;
                     if (line.startsWith('data: ')) {
                         data = line.slice(6);
                     } else if (line.startsWith('data:')) {
                         data = line.slice(5);
                     }
-                    
-                    // 跳过空行和注释
+
                     if (!data || data.trim() === '' || data.trim() === '[DONE]') continue;
-                    
+
                     if (data.startsWith('[ERROR]')) {
                         fullText += `\n❌ 错误: ${data.slice(7)}`;
+                        pendingText = fullText;
                         return;
                     }
                     if (data.startsWith('[REPLACE]')) {
-                        // 安全防护：服务端检测到敏感信息泄露，用安全文本替换
                         fullText = data.slice(9);
+                        pendingText = fullText;
                         return;
                     }
                     if (data.startsWith('[TOOL_START]')) {
                         try {
                             const toolData = JSON.parse(data.slice(12));
-                            // 在 UI 上显示一个精简的工具调用状态
                             fullText += `\n\n> 🔧 **正在执行: ${toolData.name}**\n`;
                         } catch (e) {}
+                        pendingText = fullText;
                         return;
                     }
                     if (data.startsWith('[TOOL_RESULT]')) {
-                        // 隐藏原始工具结果，保持界面整洁
-                        // 如果需要调试，可以在 console 打印
                         console.log('Tool Result:', data.slice(13));
                         return;
                     }
-                    // 还原服务端转义的换行符
                     fullText += data.replace(/\\n/g, '\n');
+                    pendingText = fullText;
                 }
-            }
+            };
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 const chunk = decoder.decode(value, { stream: true });
-                buffer += chunk; // 将新到的数据加入缓冲区
+                buffer += chunk;
 
-                // 【修复】改进 SSE 解析：正确处理内容中包含 \n\n 的情况
-                // SSE 规范：每个 data: 行后面跟 \n，消息结束是 \n\n
-                // 问题：Markdown 内容中可能包含 \n\n（段落分隔），不能简单用 lastIndexOf('\n\n')
                 while (true) {
-                    // 找完整的消息块：以 data: 开头，以 \n\n 结尾
                     const dataStart = buffer.indexOf('data: ');
-                    if (dataStart === -1) break; // 没有找到 data: 开头
-                    
-                    // 从 data: 之后找消息结束符
+                    if (dataStart === -1) break;
+
                     const remaining = buffer.substring(dataStart);
                     const msgEnd = remaining.indexOf('\n\n');
-                    if (msgEnd === -1) break; // 还没有完整的消息
-                    
-                    // 提取完整的消息内容
-                    const completeMsg = remaining.substring(0, msgEnd);
-                    const completeData = completeMsg;
-                    
-                    // 更新缓冲区：移除已处理的部分
-                    buffer = buffer.substring(dataStart + completeMsg.length + 2);
-                    
-                    // 处理这条消息
-                    processSSEMessage(completeData);
-                }
+                    if (msgEnd === -1) break;
 
-                // 每次收到新数据，重新渲染整段 Markdown（实时富文本效果）
-                bubbleEl.innerHTML = renderMarkdown(fullText);
-                scrollToBottom();
+                    const completeMsg = remaining.substring(0, msgEnd);
+                    buffer = buffer.substring(dataStart + completeMsg.length + 2);
+                    processSSEMessage(completeMsg);
+                }
             }
 
-            // 流式过程中已实时渲染 Markdown，无需额外处理
+            if (rafId) cancelAnimationFrame(rafId);
+            bubbleEl.innerHTML = renderMarkdown(fullText);
 
-            // 如果流式没拿到内容，降级用同步接口
             if (!fullText) {
                 bubbleEl.textContent = '正在获取回复...';
                 const syncRes = await fetch(`${API_BASE}/chat`, {

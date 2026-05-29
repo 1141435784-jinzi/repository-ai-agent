@@ -84,37 +84,83 @@ class ChatService:
             async def stream_generator():
                 nonlocal start_time
                 
-                # 使用 astream 获取真正的流式响应
                 full_content = ""
-                async for chunk in graph_executor.astream(
-                    {
-                        "messages": [("user", message)],
-                        "execution_plan": [],
-                        "iteration_count": 0,
-                        "task_errors": []
-                    },
-                    config=config
-                ):
-                    # langgraph astream 返回的格式是 {节点名: {状态}}
-                    # 需要遍历所有节点的输出
-                    messages = []
-                    for node_output in chunk.values():
-                        if isinstance(node_output, dict) and "messages" in node_output:
-                            messages.extend(node_output["messages"])
-                    
-                    if messages:
-                        last_message = messages[-1]
-                        if hasattr(last_message, 'content') and last_message.content:
-                            # 提取新增的内容部分（增量输出）
-                            content = last_message.content
-                            delta = content[len(full_content):]
-                            if delta:
-                                full_content = content
-                                # 转义特殊字符，避免干扰 SSE 协议解析
-                                escaped_delta = delta.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+                chunk_index = 0
+                event_count = 0
+
+                try:
+                    async for event in graph_executor.astream_events(
+                        {
+                            "messages": [("user", message)],
+                            "execution_plan": [],
+                            "iteration_count": 0,
+                            "task_errors": []
+                        },
+                        config=config,
+                        version="v2"
+                    ):
+                        event_count += 1
+                        event_type = event.get("event", "")
+                        
+                        if event_type == "on_chat_model_stream":
+                            chunk_index += 1
+                            chunk_data = event.get("data", {}).get("chunk", {})
+                            
+                            # 调试：输出前3个事件的完整结构
+                            if chunk_index <= 3:
+                                logger.info(f"🔍 第{chunk_index}个事件结构:")
+                                logger.info(f"   类型: {type(chunk_data).__name__}")
+                                logger.info(f"   hasattr content: {hasattr(chunk_data, 'content')}")
+                                if hasattr(chunk_data, 'content'):
+                                    logger.info(f"   content类型: {type(chunk_data.content).__name__}")
+                                    logger.info(f"   content值: {repr(chunk_data.content)[:200]}")
+                            
+                            # 提取内容：优先使用 content 属性（AIMessageChunk 对象）
+                            token_text = ""
+                            
+                            # 方式1：检查是否有 content 属性（AIMessageChunk）
+                            if hasattr(chunk_data, 'content'):
+                                content = chunk_data.content
+                                if isinstance(content, str) and content:
+                                    token_text = content
+                            
+                            # 方式2：检查是否是字典且有 content 字段
+                            if not token_text and isinstance(chunk_data, dict):
+                                if 'content' in chunk_data and isinstance(chunk_data['content'], str) and chunk_data['content']:
+                                    token_text = chunk_data['content']
+                                elif 'delta' in chunk_data and isinstance(chunk_data['delta'], dict):
+                                    if 'content' in chunk_data['delta'] and isinstance(chunk_data['delta']['content'], str) and chunk_data['delta']['content']:
+                                        token_text = chunk_data['delta']['content']
+                            
+                            # 过滤掉纯空白的内容，但保留首次输出时的空格（可能是标题后的空格）
+                            if token_text:
+                                # 检查是否是纯空白且不是首次输出
+                                is_whitespace_only = len(token_text.strip()) == 0
+                                if is_whitespace_only and full_content != "":
+                                    # 非首次输出的纯空白，跳过
+                                    chunk_index += 1
+                                    continue
+                                
+                                # 首次输出时，过滤掉开头可能的 markdown 标题符号
+                                if full_content == "" and token_text.startswith('##'):
+                                    # 移除开头的 ##，保留后面的空格
+                                    token_text = token_text[2:]
+                                
+                                full_content += token_text
+                                escaped_delta = token_text.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
                                 yield f"data: {escaped_delta}\n\n"
+                                if chunk_index <= 5 or chunk_index % 20 == 0:
+                                    logger.info(f"🤖 Token {chunk_index}: {repr(token_text[:50])}")
+                        
+                        if event_count % 100 == 0:
+                            logger.info(f"📡 已处理 {event_count} 个事件")
                 
-                # ========== 日志：记录最终回答 ==========
+                except Exception as e:
+                    logger.error(f"astream_events 异常: {e}")
+                    import traceback
+                    logger.error(f"详细错误:\n{traceback.format_exc()}")
+                    raise
+                
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
                 logger.info(f"┌─────────────────────────────────────────────────────────────")
@@ -123,9 +169,10 @@ class ChatService:
                 logger.info(f"│ [回答长度] {len(full_content)} 字符")
                 logger.info(f"│ [耗时] {duration:.2f} 秒")
                 logger.info(f"│ [结束时间] {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"│ [事件总数] {event_count}")
+                logger.info(f"│ [Token块数] {chunk_index}")
                 logger.info(f"└─────────────────────────────────────────────────────────────")
                 
-                # 发送结束标记
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(

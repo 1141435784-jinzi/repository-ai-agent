@@ -82,10 +82,11 @@ async def lifespan(app: FastAPI):
         logger.warning("Skill 功能可能不可用，但服务将继续运行")
 
     # 1. 初始化 MCP 管理器（可选功能）
-    PROMETHEUS_ENABLED = False
+    PROMETHEUS_AVAILABLE = False
     try:
         from src.tools import get_mcp_manager
-        from src.metrics import PROMETHEUS_AVAILABLE
+        from src.metrics import PROMETHEUS_AVAILABLE as PROM_AVAIL
+        PROMETHEUS_AVAILABLE = PROM_AVAIL
         mcp_manager = await get_mcp_manager()
         if mcp_manager:
             logger.info("✅ MCP 管理器初始化成功")
