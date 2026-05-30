@@ -36,7 +36,7 @@ safe_output = sanitize_output(agent_response)
 """
 
 # 导入各个 Prompt 模块
-from .supervisor import SUPERVISOR_PROMPT
+from .supervisor import COMPLEXITY_EVALUATION_PROMPT, ROUTER_PROMPT, TASK_DECOMPOSITION_PROMPT
 from .agent_tech import AGENT_PROMPT
 from .agent_plan import PLAN_PROMPT
 from .agent_sights import SIGHTS_PROMPT
@@ -46,7 +46,9 @@ from .security import sanitize_input, sanitize_output
 
 # 导出所有公共接口
 __all__ = [
-    "SUPERVISOR_PROMPT",
+    "ROUTER_PROMPT",
+    "COMPLEXITY_EVALUATION_PROMPT",
+    "TASK_DECOMPOSITION_PROMPT",
     "AGENT_PROMPT",
     "PLAN_PROMPT",
     "SIGHTS_PROMPT",

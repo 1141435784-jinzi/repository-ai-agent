@@ -36,7 +36,7 @@ from src.memory import get_async_checkpointer
 from src.memory.short_term_memory import ShortTermMemoryManager
 from src.memory.long_term_memory import LongTermMemoryManager
 from src.llm.gateway import get_llm
-from src.prompts import SUPERVISOR_PROMPT
+from src.prompts import COMPLEXITY_EVALUATION_PROMPT, ROUTER_PROMPT, TASK_DECOMPOSITION_PROMPT
 from src.agents.experts import (
     agent_manager, get_agent_tech_expert, get_plan_expert,
     get_sights_expert, get_food_expert, get_transport_expert
@@ -129,13 +129,29 @@ async def initialize_experts():
 
 
 # ============================================================
-# 工具函数 - 任务复杂度评估
+# 工具函数 - 任务复杂度评估（LLM驱动）
 # ============================================================
-def _evaluate_task_complexity(user_query: str) -> int:
-    """评估任务复杂度（1-5级）"""
+async def _evaluate_task_complexity(user_query: str) -> int:
+    """评估任务复杂度（1-5级）- 使用 LLM 进行语义级复杂度评估"""
+    try:
+        llm = get_llm(streaming=False)
+        
+        # 使用 COMPLEXITY_EVALUATION_PROMPT 构建提示词
+        prompt = COMPLEXITY_EVALUATION_PROMPT.format(user_query=user_query)
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        
+        complexity = int(response.content.strip())
+        return max(1, min(complexity, 5))  # 确保在 1-5 范围内
+        
+    except Exception as e:
+        workflow_logger.logger.warning(f"LLM 复杂度评估失败，使用规则回退: {e}")
+        # 回退到规则评估
+        return _evaluate_task_complexity_fallback(user_query)
+
+def _evaluate_task_complexity_fallback(user_query: str) -> int:
+    """规则回退版本的复杂度评估"""
     complexity = 1
     
-    # 关键词复杂度
     intent_keywords = {
         "景点": 2, "美食": 2, "餐厅": 2, "预算": 2, "花费": 2,
         "交通": 2, "酒店": 2, "机票": 2, "门票": 2, "天气": 2,
@@ -147,20 +163,17 @@ def _evaluate_task_complexity(user_query: str) -> int:
         if keyword in user_query:
             complexity = max(complexity, score)
     
-    # 长度复杂度
     if len(user_query) > 50:
         complexity += 1
     if len(user_query) > 100:
         complexity += 1
     
-    # 多意图检测
     found_intents = [kw for kw in intent_keywords if kw in user_query]
     if len(found_intents) >= 2:
         complexity += 1
     if len(found_intents) >= 3:
         complexity += 1
     
-    # 特殊符号检测
     if "、" in user_query or "，" in user_query:
         complexity += 1
     
@@ -174,25 +187,8 @@ async def _decompose_task(user_query: str) -> list:
     """将复杂任务拆解为原子子任务"""
     llm = get_llm(provider="deepseek", streaming=False)
     
-    decomposition_prompt = f"""
-    请将以下用户请求分解为多个逻辑独立的原子子任务，并为每个子任务指定最合适的专家。
-
-    用户请求：{user_query}
-
-    可选专家及职责：
-    - plan: 旅行目的地推荐、行程规划、签证政策、预算精算
-    - sights: 景点解说、门票政策、开放时间、游览路线
-    - transport: 航班车次查询、交通方案对比、换乘指引
-    - food: 菜品推荐、餐厅点评、订餐建议
-    - agent_tech: AI技术问题、通用任务、天气查询、其他未分类任务
-
-    请输出JSON格式：
-    {{
-        "subtasks": [
-            {{"id": 1, "task": "任务描述", "agent": "专家名", "dependencies": []}}
-        ]
-    }}
-    """
+    # 使用统一管理的任务拆解提示词
+    decomposition_prompt = TASK_DECOMPOSITION_PROMPT.format(user_query=user_query)
 
     resp = await llm.ainvoke(decomposition_prompt)
     
@@ -211,10 +207,48 @@ async def _decompose_task(user_query: str) -> list:
 
 
 # ============================================================
-# 工具函数 - 专家路由映射
+# 工具函数 - 专家路由映射（LLM驱动）
 # ============================================================
-def _get_expert_for_task(task: str) -> str:
-    """根据任务内容自动匹配专家"""
+async def _get_expert_for_task(task: str) -> str:
+    """使用 LLM 进行语义级意图识别，匹配最合适的专家"""
+    try:
+        llm = get_llm(streaming=False)
+        
+        # 动态获取已注册的专家列表
+        agents = agent_manager.list_agents()
+        if not agents:
+            return _get_expert_for_task_fallback(task)
+        
+        # 构建专家列表描述
+        agent_descriptions = []
+        for agent in agents:
+            capabilities = ", ".join(agent.get("capabilities", [])[:3])
+            agent_descriptions.append(f"- {agent['name']}: {agent['description']}")
+        
+        # 使用 ROUTER_PROMPT 进行意图识别
+        prompt = ROUTER_PROMPT.format(
+            agent_list="\n".join(agent_descriptions),
+            user_query=task
+        )
+        
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        selected_agent = response.content.strip().lower()
+        
+        # 验证返回的专家是否存在
+        valid_agents = [a["name"].lower() for a in agents]
+        if selected_agent in valid_agents:
+            return selected_agent
+        
+        # 如果返回的专家不存在，使用回退
+        workflow_logger.logger.warning(f"LLM 返回的专家 '{selected_agent}' 不存在，使用回退")
+        return _get_expert_for_task_fallback(task)
+        
+    except Exception as e:
+        workflow_logger.logger.warning(f"LLM 意图识别失败，使用规则回退: {e}")
+        return _get_expert_for_task_fallback(task)
+
+def _get_expert_for_task_fallback(task: str) -> str:
+    """规则回退版本：根据关键词匹配专家"""
     expert_mapping = {
         "景点": "sights",
         "景区": "sights", 
@@ -253,6 +287,61 @@ def _get_expert_for_task(task: str) -> str:
 
 
 # ============================================================
+# 工具函数 - 对话历史分析
+# ============================================================
+def _analyze_conversation_context(messages: list) -> dict:
+    """分析对话历史上下文，提取有用特征"""
+    context = {
+        "turn_count": 0,
+        "recent_tool_failures": 0,
+        "is_repetitive": False,
+        "has_pending_tool_call": False,
+        "context_summary": ""
+    }
+    
+    if not messages:
+        return context
+    
+    # 统计对话轮数（只计算用户和AI的消息）
+    user_messages = [m for m in messages if hasattr(m, 'type') and m.type == 'human']
+    context["turn_count"] = len(user_messages)
+    
+    # 检查最近的工具调用失败
+    recent_messages = messages[-5:]  # 最近5条消息
+    for msg in recent_messages:
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            # 检查工具调用是否失败
+            for tool_call in msg.tool_calls:
+                if hasattr(tool_call, 'status') and tool_call.status == 'error':
+                    context["recent_tool_failures"] += 1
+    
+    # 检测重复提问模式
+    if len(user_messages) >= 2:
+        recent_queries = [m.content[:50] for m in user_messages[-3:]]
+        # 如果最近3个查询中有重复
+        if len(recent_queries) != len(set(recent_queries)):
+            context["is_repetitive"] = True
+    
+    # 检查是否有待处理的工具调用
+    for msg in messages[-3:]:
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            # 检查是否有未完成的工具调用
+            for tool_call in msg.tool_calls:
+                if not hasattr(tool_call, 'status') or tool_call.status != 'success':
+                    context["has_pending_tool_call"] = True
+                    break
+    
+    # 生成上下文摘要（最近3条消息）
+    context_snippets = []
+    for m in messages[-3:]:
+        if hasattr(m, 'content'):
+            content = m.content[:30] + "..." if len(m.content) > 30 else m.content
+            context_snippets.append(f"{m.type}: {content}")
+    context["context_summary"] = "\n".join(context_snippets)
+    
+    return context
+
+# ============================================================
 # 核心节点实现
 # ============================================================
 
@@ -274,13 +363,32 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
         
         # 获取任务错误记录
         task_errors = state.get("task_errors", [])
+        
+        # ============= 增强对话历史利用 =============
+        # 获取完整对话历史
+        messages = state.get("messages", [])
+        
+        # 分析历史对话特征
+        conversation_context = _analyze_conversation_context(messages)
+        
+        # 检查是否有重复提问模式（用户反复询问相同问题）
+        if conversation_context.get("is_repetitive"):
+            workflow_logger.logger.warning(f"🔄 [{thread_id[:8]}] 检测到重复提问模式")
+        
+        # 检查历史中是否有工具调用失败记录
+        if conversation_context.get("recent_tool_failures") > 0:
+            workflow_logger.logger.warning(f"⚠️ [{thread_id[:8]}] 检测到 {conversation_context['recent_tool_failures']} 次工具调用失败")
+        
+        # 检查对话轮数
+        if conversation_context.get("turn_count") > 3:
+            workflow_logger.logger.info(f"📢 [{thread_id[:8]}] 对话已进行 {conversation_context['turn_count']} 轮")
 
         # 1️⃣ 如果没有执行计划，创建初始计划
         if not plan:
             workflow_logger.logger.info(f"🔍 [{thread_id[:8]}] 评估任务复杂度")
             
             # 评估复杂度
-            complexity = _evaluate_task_complexity(user_query)
+            complexity = await _evaluate_task_complexity(user_query)
             workflow_logger.logger.info(f"⚡ [{thread_id[:8]}] 任务复杂度等级: {complexity}/5")
             
             # 根据复杂度决定是否拆解
@@ -289,26 +397,28 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
                 subtasks = await _decompose_task(user_query)
                 plan = []
                 for subtask in subtasks:
-                    agent = subtask.get("agent") or _get_expert_for_task(subtask["task"])
+                    agent = subtask.get("agent") or await _get_expert_for_task(subtask["task"])
                     plan.append({
                         "id": subtask["id"],
                         "task": subtask["task"],
                         "agent": agent,
                         "status": "pending",
                         "dependencies": subtask.get("dependencies", []),
-                        "attempts": 0
+                        "attempts": 0,
+                        "priority": subtask.get("priority", "medium")  # 新增优先级字段
                     })
                 workflow_logger.logger.info(f"📋 [{thread_id[:8]}] 任务拆解完成: {len(plan)} 个子任务")
             else:
                 # 简单任务：直接分配
-                agent = _get_expert_for_task(user_query)
+                agent = await _get_expert_for_task(user_query)
                 plan = [{
                     "id": 1,
                     "task": user_query,
                     "agent": agent,
                     "status": "pending",
                     "dependencies": [],
-                    "attempts": 0
+                    "attempts": 0,
+                    "priority": "medium"  # 默认中等优先级
                 }]
 
             # 重新计算任务状态（因为 plan 已更新）
@@ -349,18 +459,26 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
                 failed_task["attempts"] = 0
                 workflow_logger.logger.info(f"🔀 [{thread_id[:8]}] 任务 {task_id} 降级到 agent_tech")
 
-        # 4️⃣ 找到可以执行的下一个任务（考虑依赖）
+        # 4️⃣ 找到可以执行的下一个任务（考虑依赖和优先级）
         next_task = None
+        
+        # 筛选出依赖已完成的任务
+        ready_tasks = []
         for task in pending_tasks:
-            # 检查依赖是否都已完成
             dependencies = task.get("dependencies", [])
             deps_completed = all(
                 any(t["id"] == dep and t["status"] == "completed" for t in plan)
                 for dep in dependencies
             )
             if deps_completed:
-                next_task = task
-                break
+                ready_tasks.append(task)
+        
+        # 按优先级排序：high > medium > low
+        if ready_tasks:
+            priority_order = {"high": 0, "medium": 1, "low": 2}
+            ready_tasks.sort(key=lambda t: priority_order.get(t.get("priority", "medium")))
+            next_task = ready_tasks[0]
+            workflow_logger.logger.info(f"🎯 [{thread_id[:8]}] 选择高优先级任务: {next_task['id']} (优先级: {next_task.get('priority')})")
         
         # 如果没有考虑依赖的任务，取第一个pending任务
         if not next_task and pending_tasks:
@@ -710,11 +828,37 @@ async def summary_node(state: AgentState, config: RunnableConfig) -> dict:
 # ============================================================
 # 路由决策函数
 # ============================================================
-def route_to_expert(state: AgentState) -> str:
-    """路由到专家节点"""
-    route = state.get("route", "agent_tech")
-    
-    route_map = {
+def _extract_user_text(state: AgentState) -> str:
+    """从 state 中提取用户消息文本"""
+    messages = state.get("messages", [])
+    for msg in reversed(messages):
+        if msg.get("type") == "human":
+            content_list = msg.get("content", [])
+            if content_list and isinstance(content_list, list):
+                return content_list[0].get("text", "")
+    return ""
+
+def _build_agent_routing_prompt(user_text: str, agents: List[Dict[str, Any]]) -> str:
+    """构建 LLM 路由提示词"""
+    if not agents:
+        return ""
+
+    agent_descriptions = []
+    for agent in agents:
+        capabilities = ", ".join(agent.get("capabilities", [])[:5])
+        agent_descriptions.append(
+            f"- {agent['name']}: {agent['description']} (能力: {capabilities})"
+        )
+
+    # 使用 ChatPromptTemplate 的 format 方法构建提示词
+    return ROUTER_PROMPT.format(
+        agent_list="\n".join(agent_descriptions),
+        user_query=user_text
+    )
+
+def _map_agent_name_to_node(agent_name: str) -> str:
+    """将 agent 名称映射到图节点名称"""
+    mapping = {
         "plan": "plan",
         "sights": "sights_agent",
         "transport": "transport_agent",
@@ -722,9 +866,63 @@ def route_to_expert(state: AgentState) -> str:
         "agent_tech": "agent_tech",
         "summary": "summary"
     }
-    
-    return route_map.get(route, "agent_tech")
+    return mapping.get(agent_name, "agent_tech")
 
+async def route_to_expert(state: AgentState) -> str:
+    """
+    LLM-Based 动态路由：从用户消息识别意图 → 动态路由到对应专家
+
+    相比硬编码的关键词匹配，LLM 路由的优势：
+    1. 动态扩展：新注册 agent 无需修改路由逻辑
+    2. 语义理解：能理解同义词和上下文
+    3. 多意图处理：能判断主要意图和次要意图
+    """
+    user_text = _extract_user_text(state)
+
+    agents = agent_manager.list_agents()
+    if not agents:
+        workflow_logger.warning("router", "No agents registered, using fallback")
+        return "agent_tech"
+
+    routing_prompt = _build_agent_routing_prompt(user_text, agents)
+
+    try:
+        llm = get_llm(streaming=False)
+        response = await llm.ainvoke([HumanMessage(content=routing_prompt)])
+        selected_agent = response.content.strip().lower()
+
+        if selected_agent not in [a["name"] for a in agents]:
+            if "summary" in selected_agent:
+                selected_agent = "summary"
+            elif any(kw in user_text.lower() for kw in ["总结", "汇总", "整理"]):
+                selected_agent = "summary"
+            else:
+                selected_agent = "agent_tech"
+
+        node_name = _map_agent_name_to_node(selected_agent)
+        workflow_logger.info("router", f"LLM routed '{user_text[:30]}...' → {node_name}")
+        return node_name
+
+    except Exception as e:
+        workflow_logger.error("router", f"LLM routing failed: {e}, using keyword fallback")
+        return _keyword_fallback_route(user_text)
+
+def _keyword_fallback_route(text: str) -> str:
+    """关键词回退路由 - 当 LLM 不可用时的备选方案"""
+    text = text.strip().lower()
+
+    if any(key in text for key in ["规划", "计划", "攻略", "行程", "安排", "玩几天", "怎么玩", "路线", "旅游", "旅行", "逛一逛", "游玩", "日程"]):
+        return "plan"
+    elif any(key in text for key in ["景点", "景区", "去哪玩", "好去处", "打卡", "好玩", "必去", "名胜", "公园", "海边", "观景"]):
+        return "sights_agent"
+    elif any(key in text for key in ["交通", "机票", "高铁", "火车", "动车", "怎么去", "打车", "地铁", "公交", "航班", "路线"]):
+        return "transport_agent"
+    elif any(key in text for key in ["美食", "吃什么", "餐厅", "好吃", "小吃", "特产", "粤菜", "早茶", "宵夜", "推荐菜"]):
+        return "food_agent"
+    elif any(key in text for key in ["总结", "汇总", "整理"]):
+        return "summary"
+    else:
+        return "agent_tech"
 
 def should_call_tools(state: AgentState) -> Literal["tools", "supervisor"]:
     """判断是否需要调用工具"""
