@@ -144,15 +144,17 @@ from src.tools.implementations import (
 )
 
 # 7. MCP 工具适配器
-from src.tools.mcp import (
-    get_mcp_manager,
-    close_mcp_manager,
+from src.tools.implementations.mcp_adapter import (
+    get_mcp_client_manager as get_mcp_manager,
+    close_mcp_client_manager as close_mcp_manager,
     is_mcp_available,
     get_available_mcp_tools,
     call_mcp_tool,
-    refresh_tools as refresh_mcp_tools,
-    get_metrics as get_mcp_metrics,
-    get_tool_info as get_mcp_tool_info,
+    refresh_mcp_tools,
+    get_mcp_metrics as get_mcp_metrics,
+    get_mcp_tool_info as get_mcp_tool_info,
+    get_langchain_tools_from_mcp,
+    refresh_tools,
     MCPServerConfig,
 )
 
@@ -240,6 +242,8 @@ __all__ = [
     "get_mcp_metrics",
     "get_mcp_tool_info",
     "MCPServerConfig",
+    "get_langchain_tools_from_mcp",
+    "refresh_tools",
     
     # 向后兼容接口
     "get_tools",

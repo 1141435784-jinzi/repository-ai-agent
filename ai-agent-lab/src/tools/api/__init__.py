@@ -55,7 +55,7 @@ async def _get_mcp_tools_cached() -> List[LangChainBaseTool]:
         return _mcp_tools_cache
     
     try:
-        from src.tools.mcp import get_langchain_tools_from_mcp
+        from src.tools.implementations.mcp_adapter import get_langchain_tools_from_mcp
         _mcp_tools_cache = await get_langchain_tools_from_mcp()
         _mcp_tools_cache_time = current_time
     except ImportError:

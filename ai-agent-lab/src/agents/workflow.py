@@ -54,6 +54,9 @@ workflow_logger = WorkflowLogger(logger)
 _agent_lock = asyncio.Lock()
 _async_agent = None
 _graph_compile_cache = {}
+_system_initialized = False
+skill_manager = None
+mcp_manager = None
 
 
 # ============================================================
@@ -735,6 +738,39 @@ def should_call_tools(state: AgentState) -> Literal["tools", "supervisor"]:
 
 
 # ============================================================
+# 系统初始化
+# ============================================================
+async def _initialize_components():
+    """初始化系统组件（Skill管理器、MCP管理器、专家系统），防止重复初始化"""
+    global skill_manager, mcp_manager, _system_initialized
+
+    if _system_initialized:
+        return
+    try:
+        logger.info("正在初始化 Skill 管理器...")
+        from src.tools.skills import SkillManager
+        skill_manager = SkillManager()
+        manager_skill_count = skill_manager.initialize()
+        logger.info(f"✅ 已加载 {manager_skill_count} 个 Skill")
+    except Exception as e:
+        logger.warning(f"Skill 管理器初始化失败：{e}")
+        logger.warning("Skill 功能可能不可用，但服务将继续运行")
+    
+    try:
+        logger.info("正在初始化 MCP 管理器...")
+        from src.tools import get_mcp_manager
+        mcp_manager = await get_mcp_manager()
+        logger.info("✅ MCP 管理器初始化成功")
+    except Exception as e:
+        logger.warning(f"MCP 管理器初始化失败：{e}")
+        logger.warning("MCP 功能可能不可用，但服务将继续运行")
+
+    await initialize_experts()
+
+    _system_initialized = True
+
+
+# ============================================================
 # 构建流程图
 # ============================================================
 def _build_graph() -> StateGraph:
@@ -796,7 +832,7 @@ def _build_graph() -> StateGraph:
 async def build_async_agent_graph(
     config: RunnableConfig | None = None
 ) -> StateGraph:
-    # 你的构建逻辑
+    await _initialize_components()
     graph = _build_graph()
     checkpointer = await get_async_checkpointer()
     compiled = graph.compile(checkpointer=checkpointer)

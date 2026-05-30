@@ -267,6 +267,18 @@ async def refresh_mcp_tools():
     await get_mcp_client_manager()
 
 
+async def get_langchain_tools_from_mcp() -> List:
+    """获取所有 MCP 工具（返回字典列表，兼容旧接口）"""
+    mgr = await get_mcp_client_manager()
+    return await mgr.get_tools()
+
+
+def refresh_tools():
+    """刷新 MCP 工具缓存（兼容旧接口）"""
+    import asyncio
+    asyncio.create_task(refresh_mcp_tools())
+
+
 # MCP 工具包装器 - 将 MCP 工具注册到企业级工具架构
 class MCPToolInput(BaseModel):
     """MCP 工具输入参数"""

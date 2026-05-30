@@ -55,57 +55,13 @@ async def lifespan(app: FastAPI):
 
     【生产实践】启动检查清单：
     1. 初始化日志系统
-    2. 初始化 MCP 管理器（可选）
     3. 启动知识库文件监听服务
     4. 检查外部服务状态（如 Prometheus）
     """
-    global mcp_manager
-    global skill_manager
 
     logger.info("=" * 60)
     logger.info("Agent API 正在启动...")
     logger.info("=" * 60)
-
-    # 0. 初始化 Skill 管理器
-    logger.info("正在初始化 Skill 管理器...")
-    try:
-        from src.tools.skills import SkillManager
-        skill_manager = SkillManager()
-        skill_count = skill_manager.initialize()
-        logger.info(f"✅ Skill 管理器初始化成功，已加载 {skill_count} 个技能")
-    except ModuleNotFoundError as e:
-        logger.warning(f"Skill 管理器初始化失败：缺少依赖模块 {e}")
-        logger.warning("Skill 功能可能不可用，但服务将继续运行")
-        skill_manager = None
-    except Exception as e:
-        logger.warning(f"Skill 管理器初始化失败：{e}")
-        logger.warning("Skill 功能可能不可用，但服务将继续运行")
-
-    # 1. 初始化 MCP 管理器（可选功能）
-    PROMETHEUS_AVAILABLE = False
-    try:
-        from src.tools import get_mcp_manager
-        from src.metrics import PROMETHEUS_AVAILABLE as PROM_AVAIL
-        PROMETHEUS_AVAILABLE = PROM_AVAIL
-        mcp_manager = await get_mcp_manager()
-        if mcp_manager:
-            logger.info("✅ MCP 管理器初始化成功")
-        else:
-            logger.warning("⚠️ MCP 管理器初始化失败，功能可能不可用")
-    except Exception as e:
-        logger.warning(f"MCP 管理器初始化失败：{e}")
-        logger.warning("MCP 功能可能不可用，但服务将继续运行")
-
-    # 【生产实践】初始化领域专家系统（加载知识库）
-    # 这会创建所有专家的 RAG 引擎并加载知识库内容到向量数据库
-    logger.info("正在初始化领域专家系统...")
-    try:
-        from src.agents import initialize_experts
-        await initialize_experts()
-        logger.info("✅ 领域专家系统初始化成功")
-    except Exception as e:
-        logger.warning(f"领域专家系统初始化失败：{e}")
-        logger.warning("专家功能可能不可用，但服务将继续运行")
 
     # 【生产实践】启动知识库文件监听服务
     # 当知识库文件发生变化时，自动触发增量更新
@@ -132,11 +88,11 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Prometheus 监控未启用，请安装 prometheus-client")
 
-    # 【进阶方案】启动 Agent 预热任务（异步执行，不阻塞启动）
-    # 预热机制可以在服务启动后后台创建 Agent 实例，提升首次请求响应速度
-    logger.info("🚀 启动 Agent 预热任务...")
+    # 【进阶方案】启动状态图预热任务（异步执行，不阻塞启动）
+    # 预热机制可以在服务启动后后台创建 StateGraph 实例，提升首次请求响应速度
+    logger.info("🚀 启动状态图预热任务...")
     
-    asyncio.create_task(warm_up_agent())
+    asyncio.create_task(warm_up_graph())
 
     # ============================================================
     # 关键：lifespan 上下文管理器的分界点
@@ -164,15 +120,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"停止文件监听服务失败：{e}")
 
-    # 2. 关闭 MCP 管理器
-    try:
-        from src.tools import close_mcp_manager
-        logger.info("正在关闭 MCP 管理器...")
-        await close_mcp_manager()
-        logger.info("MCP 管理器已关闭")
-    except Exception as e:
-        logger.warning(f"关闭 MCP 管理器失败：{e}")
-
     # 3. 关闭内存池
     try:
         from src.memory import close_async_pool
@@ -188,50 +135,41 @@ async def lifespan(app: FastAPI):
 # ============================================================
 # Agent 预热机制（简化版）
 # ============================================================
-async def warm_up_agent():
+async def warm_up_graph():
     """
-    Agent 预热任务 - 在服务启动后异步创建 Agent 实例
+    状态图预热任务 - 在服务启动后异步创建执行图实例
     
-    【设计原理】：
-    1. 延迟 1 秒启动，让其他初始化任务先完成
+    【功能】：
+    1. 延迟 1 秒启动，避免与其他初始化任务竞争资源
     2. 异步执行，不阻塞服务启动
-    3. 只预热 Agent 实例，其依赖组件会自动初始化
-    
-    【为什么只预热 Agent？】
-    - Agent 构建时会自动触发依赖组件的初始化
-    - 所有依赖组件都使用了单例缓存模式
-    - 避免重复初始化和过度预热
+    3. 创建 StateGraph 实例，触发所有依赖组件初始化
     
     【依赖链】
-    Agent → 领域专家 → RAG 引擎 → Embedding 模型
-          → LLM 模型
-          → Memory Manager
-          → Tool Manager
+    StateGraph → 领域专家 → RAG 引擎 → Embedding 模型
+              → LLM 模型
+              → Memory Manager
+              → Tool Manager
     """
     start_time = datetime.now()
     
-    # 延迟 1 秒启动，避免与其他初始化任务竞争资源
     await asyncio.sleep(1)
     
     try:
-        logger.info("  └─ 开始预热 执行图 实例（含依赖组件）...")
+        logger.info("  └─ 开始创建状态图实例...")
         
-        # 导入并调用 get_async_agent 创建实例
-        # 这会触发所有依赖组件的初始化（Embedding、LLM、Memory、Tools 等）
         from src.agents.workflow import get_async_graph
         await get_async_graph()
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        logger.info(f"✅ 执行图 预热完成！耗时：{duration:.2f} 秒")
+        logger.info(f"✅ 状态图创建完成！耗时：{duration:.2f} 秒")
         
     except Exception as e:
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
-        logger.warning(f"⚠️ 执行图 预热失败：{str(e)}")
-        logger.warning(f"   预热耗时：{duration:.2f} 秒")
-        logger.warning(f"   首次请求时将自动重试创建 执行图 实例")
+        logger.warning(f"⚠️ 状态图创建失败：{str(e)}")
+        logger.warning(f"   耗时：{duration:.2f} 秒，首次请求时将自动重试")
 
 # ============================================================
 # 应用创建

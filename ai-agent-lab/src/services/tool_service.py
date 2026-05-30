@@ -17,7 +17,6 @@ from typing import Optional, List
 
 from src.tools import (
     get_mcp_manager,
-    close_mcp_manager,
     is_mcp_available,
     get_all_tools,
     call_tool,
