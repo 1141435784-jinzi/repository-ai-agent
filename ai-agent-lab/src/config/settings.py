@@ -45,7 +45,13 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 # LLM 配置 — 多 Provider 统一管理
 # ============================================================
 
-# Provider 1：DeepSeek（默认主模型）
+# Provider 4：阿里云百炼（默认主模型）
+BAILIAN_API_KEY: str = os.getenv("LLM_BAILIAN_API_KEY", "")
+BAILIAN_BASE_URL: str = os.getenv("LLM_BAILIAN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+BAILIAN_MODEL: str = os.getenv("LLM_BAILIAN_MODEL", "qwen-max")
+
+
+# Provider 1：DeepSeek（备用模型）
 DEEPSEEK_API_KEY: str = os.getenv("LLM_DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")

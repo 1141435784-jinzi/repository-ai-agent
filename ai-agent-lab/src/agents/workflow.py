@@ -134,7 +134,7 @@ async def initialize_experts():
 async def _evaluate_task_complexity(user_query: str) -> int:
     """评估任务复杂度（1-5级）- 使用 LLM 进行语义级复杂度评估"""
     try:
-        llm = get_llm(streaming=False)
+        llm = get_llm(provider="zhipu", streaming=False)
         
         # 使用 COMPLEXITY_EVALUATION_PROMPT 构建提示词
         prompt = COMPLEXITY_EVALUATION_PROMPT.format(user_query=user_query)
@@ -185,7 +185,7 @@ def _evaluate_task_complexity_fallback(user_query: str) -> int:
 # ============================================================
 async def _decompose_task(user_query: str) -> list:
     """将复杂任务拆解为原子子任务"""
-    llm = get_llm(provider="deepseek", streaming=False)
+    llm = get_llm(streaming=False)
     
     # 使用统一管理的任务拆解提示词
     decomposition_prompt = TASK_DECOMPOSITION_PROMPT.format(user_query=user_query)
@@ -212,7 +212,7 @@ async def _decompose_task(user_query: str) -> list:
 async def _get_expert_for_task(task: str) -> str:
     """使用 LLM 进行语义级意图识别，匹配最合适的专家"""
     try:
-        llm = get_llm(streaming=False)
+        llm = get_llm(provider="zhipu", streaming=False)
         
         # 动态获取已注册的专家列表
         agents = agent_manager.list_agents()
@@ -887,7 +887,7 @@ async def route_to_expert(state: AgentState) -> str:
     routing_prompt = _build_agent_routing_prompt(user_text, agents)
 
     try:
-        llm = get_llm(streaming=False)
+        llm = get_llm(provider="zhipu", streaming=False)
         response = await llm.ainvoke([HumanMessage(content=routing_prompt)])
         selected_agent = response.content.strip().lower()
 
