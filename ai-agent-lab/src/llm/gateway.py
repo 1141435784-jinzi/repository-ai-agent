@@ -169,8 +169,24 @@ class SemanticCache:
         """
         self.max_size = max_size
         self.similarity_threshold = similarity_threshold
-        self._cache = OrderedDict()  # query_hash -> (response, timestamp, query_text)
+        self._cache = OrderedDict()
         self._lock = threading.Lock()
+        self._embeddings = None
+        self._embedding_lock = threading.Lock()
+    
+    def _get_embeddings(self):
+        """懒加载 embedding 模型"""
+        if self._embeddings is None:
+            with self._embedding_lock:
+                if self._embeddings is None:
+                    try:
+                        from src.rag.embedding import get_embeddings
+                        self._embeddings = get_embeddings()
+                        logger.debug("SemanticCache embedding 模型加载成功")
+                    except Exception as e:
+                        logger.warning(f"SemanticCache 无法加载 embedding 模型: {e}")
+                        self._embeddings = None
+        return self._embeddings
     
     def _compute_hash(self, text: str) -> str:
         """计算文本的哈希（用于精确匹配）
@@ -183,26 +199,44 @@ class SemanticCache:
         """
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
-    def _simple_similarity(self, text1: str, text2: str) -> float:
-        """简化版相似度计算（生产环境建议用 sentence-transformers）
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """计算余弦相似度
         
-        【优化建议】生产环境使用：
-        from sentence_transformers import SentenceTransformer
-        encoder = SentenceTransformer('paraphrase-MiniLM-L6-v2')
-        然后用余弦相似度计算
-        
-        当前使用简化版：Jaccard 相似度
+        Args:
+            vec1: 向量1
+            vec2: 向量2
+            
+        Returns:
+            float: 余弦相似度 (0-1)
         """
-        set1 = set(text1.lower().split())
-        set2 = set(text2.lower().split())
-        
-        if not set1 or not set2:
+        if not vec1 or not vec2:
             return 0.0
         
-        intersection = len(set1 & set2)
-        union = len(set1 | set2)
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = sum(a * a for a in vec1) ** 0.5
+        norm2 = sum(b * b for b in vec2) ** 0.5
         
-        return intersection / union if union > 0 else 0.0
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        return dot_product / (norm1 * norm2)
+    
+    def _compute_similarity(self, text1: str, text2: str) -> float:
+        """基于本地 Embedding 模型的语义相似度计算
+        
+        使用 HuggingFace Embedding 模型计算语义相似度
+        """
+        embeddings_model = self._get_embeddings()
+        if embeddings_model is None:
+            return 0.0
+        
+        try:
+            vec1 = embeddings_model.embed_query(text1)
+            vec2 = embeddings_model.embed_query(text2)
+            return self._cosine_similarity(vec1, vec2)
+        except Exception as e:
+            logger.warning(f"Embedding 相似度计算失败: {e}")
+            return 0.0
     
     def get(self, query: str) -> Optional[str]:
         """从缓存中获取响应
@@ -214,20 +248,16 @@ class SemanticCache:
             str: 缓存的响应，如果未命中则返回 None
         """
         with self._lock:
-            # 1. 精确匹配
             query_hash = self._compute_hash(query)
             if query_hash in self._cache:
                 response, timestamp, cached_query = self._cache[query_hash]
-                # 移动到末尾（最近使用）
                 self._cache.move_to_end(query_hash)
                 logger.debug(f"缓存命中（精确）: '{query[:30]}...'")
                 return response
             
-            # 2. 语义匹配（简化版）
             for cached_hash, (response, timestamp, cached_query) in self._cache.items():
-                similarity = self._simple_similarity(query, cached_query)
+                similarity = self._compute_similarity(query, cached_query)
                 if similarity >= self.similarity_threshold:
-                    # 移动到末尾
                     self._cache.move_to_end(cached_hash)
                     logger.debug(f"缓存命中（语义 {similarity:.2f}）: '{query[:30]}...'")
                     return response
@@ -245,15 +275,12 @@ class SemanticCache:
         with self._lock:
             query_hash = self._compute_hash(query)
             
-            # 如果已存在，先删除（更新）
             if query_hash in self._cache:
                 del self._cache[query_hash]
             
-            # LRU 淘汰：删除最旧的
             while len(self._cache) >= self.max_size:
                 self._cache.popitem(last=False)
             
-            # 添加新缓存
             self._cache[query_hash] = (response, datetime.now(), query)
     
     def clear(self):
