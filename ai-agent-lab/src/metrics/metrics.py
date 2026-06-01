@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 import time
 
+# 检查 Prometheus 是否可用
+try:
+    import prometheus_client
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
 
 # 创建全局注册器
 registry = CollectorRegistry()
@@ -223,6 +229,72 @@ class RAGMetrics:
             rag_retrieval_recall.labels(
                 collection=self.collection
             ).observe(self.recall_score)
+
+
+# ==================== 快捷记录函数 ====================
+
+def record_llm_call(provider: str, model: str, input_tokens: int, output_tokens: int, duration: float, success: bool = True):
+    """记录 LLM 调用指标"""
+    llm_calls_total.labels(
+        provider=provider,
+        model=model,
+        success=str(success)
+    ).inc()
+    
+    llm_call_duration.labels(
+        provider=provider,
+        model=model
+    ).observe(duration)
+    
+    if input_tokens > 0:
+        llm_tokens_used.labels(
+            provider=provider,
+            model=model,
+            type="prompt"
+        ).inc(input_tokens)
+    
+    if output_tokens > 0:
+        llm_tokens_used.labels(
+            provider=provider,
+            model=model,
+            type="completion"
+        ).inc(output_tokens)
+
+def record_llm_error(provider: str, model: str, error_type: str):
+    """记录 LLM 错误"""
+    llm_calls_total.labels(
+        provider=provider,
+        model=model,
+        success="False"
+    ).inc()
+
+def record_fallback(from_provider: str, to_provider: str):
+    """记录降级调用"""
+    llm_fallback_calls.labels(
+        from_provider=from_provider,
+        to_provider=to_provider
+    ).inc()
+
+def calculate_token_cost(provider: str, input_tokens: int, output_tokens: int) -> float:
+    """
+    计算 Token 成本 (元)
+    
+    参考价格 (约值):
+    - DeepSeek: 1元 / 1M tokens
+    - GPT-4o: 100元 / 1M tokens
+    - Ollama: 0元
+    """
+    # 简化版定价逻辑
+    rates = {
+        "deepseek": 0.000001,
+        "openai": 0.00001,
+        "zhipu": 0.000005,
+        "bailian": 0.000002,
+        "ollama": 0.0
+    }
+    
+    rate = rates.get(provider.lower(), 0.0)
+    return (input_tokens + output_tokens) * rate
 
 
 @dataclass

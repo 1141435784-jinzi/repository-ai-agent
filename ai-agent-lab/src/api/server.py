@@ -25,6 +25,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from src.metrics import PROMETHEUS_AVAILABLE
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,

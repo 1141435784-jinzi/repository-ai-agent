@@ -17,6 +17,12 @@ from .metrics import (
     rag_relevant_docs_found,
     agent_execution_time,
     tool_calls_total,
+    PROMETHEUS_AVAILABLE,
+    record_llm_call,
+    record_llm_error,
+    record_fallback,
+    calculate_token_cost,
+    registry,
 )
 
 __all__ = [
@@ -31,4 +37,10 @@ __all__ = [
     "rag_relevant_docs_found",
     "agent_execution_time",
     "tool_calls_total",
+    "PROMETHEUS_AVAILABLE",
+    "record_llm_call",
+    "record_llm_error",
+    "record_fallback",
+    "calculate_token_cost",
+    "registry",
 ]

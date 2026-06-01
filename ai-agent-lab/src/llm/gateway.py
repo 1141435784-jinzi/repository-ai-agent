@@ -58,7 +58,7 @@ from src.config import (
 
 # Prometheus 指标集成
 try:
-    from prometheus_metrics import (
+    from src.metrics import (
         record_llm_call,
         record_llm_error,
         record_fallback,

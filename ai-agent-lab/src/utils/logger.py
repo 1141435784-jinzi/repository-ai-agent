@@ -170,6 +170,18 @@ class WorkflowLogger:
         """记忆更新"""
         self.logger.debug(f"🧠 [{thread_id[:8]}] 记忆更新 | 上下文长度: {memory_context_length}")
     
+    def info(self, node_name: str, message: str, thread_id: str = "system"):
+        """通用信息记录"""
+        self.logger.info(f"ℹ️ [{thread_id[:8]}] [{node_name}] {message}")
+
+    def warning(self, node_name: str, message: str, thread_id: str = "system"):
+        """通用警告记录"""
+        self.logger.warning(f"⚠️ [{thread_id[:8]}] [{node_name}] {message}")
+
+    def debug(self, node_name: str, message: str, thread_id: str = "system"):
+        """通用调试记录"""
+        self.logger.debug(f"🔍 [{thread_id[:8]}] [{node_name}] {message}")
+
     def error(self, thread_id: str, node_name: str, error: Exception):
         """错误记录"""
         self.logger.error(f"❌ [{thread_id[:8]}] [{node_name}] 异常: {str(error)[:100]}...", exc_info=True)

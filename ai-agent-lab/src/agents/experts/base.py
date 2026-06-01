@@ -165,9 +165,15 @@ class DomainExpertAgent(ABC):
         # 直接调用异步版本，避免在异步上下文中创建新事件循环
         common_tools = await tool_api.to_langchain_tools()
         if common_tools:
-            self._tools.extend(common_tools)
-            tool_names = ", ".join([t.name for t in common_tools])
-            print(f"🔧 {self.name} 已加载 {len(common_tools)} 个通用工具: {tool_names}")
+            # 过滤掉非 BaseTool 对象，确保 tool 具有 name 属性
+            valid_common_tools = [t for t in common_tools if hasattr(t, "name")]
+            self._tools.extend(valid_common_tools)
+            tool_names = ", ".join([t.name for t in valid_common_tools])
+            print(f"🔧 {self.name} 已加载 {len(valid_common_tools)} 个通用工具: {tool_names}")
+            
+            if len(valid_common_tools) < len(common_tools):
+                diff = len(common_tools) - len(valid_common_tools)
+                print(f"⚠️ {self.name} 过滤掉了 {diff} 个无效工具对象")
 
         # 使用 create_agent 创建Agent（生成工具调用信息，由 Supervisor 统一执行）
         self._inner_agent = create_agent(

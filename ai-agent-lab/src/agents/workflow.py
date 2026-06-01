@@ -20,6 +20,7 @@ START → supervisor → [expert_agent] → tools → supervisor → summary →
 from typing import Annotated, List, Dict, Any, Optional
 from typing_extensions import Literal
 import asyncio
+import json
 import logging
 
 from langchain_core.messages import (
@@ -526,7 +527,7 @@ async def _build_agent_response(
     """构建 Agent 响应（支持工具调用）- 通过调用专家 Agent 的 process() 方法"""
     from langchain_core.messages import AIMessage
 
-    thread_id = config["configurable"].get("thread_id", "default")
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
 
     workflow_logger.node_enter("agent_response", thread_id)
 
@@ -706,7 +707,7 @@ async def tools_node(state: AgentState, config: RunnableConfig) -> dict:
     workflow_logger.node_enter("tools", thread_id)
 
     try:
-        tools = tool_api.to_langchain_tools()
+        tools = await tool_api.to_langchain_tools()
         if not tools:
             logger.warning(f"[{thread_id[:8]}] 没有可用的工具")
             return {}
@@ -832,10 +833,26 @@ def _extract_user_text(state: AgentState) -> str:
     """从 state 中提取用户消息文本"""
     messages = state.get("messages", [])
     for msg in reversed(messages):
-        if msg.get("type") == "human":
-            content_list = msg.get("content", [])
-            if content_list and isinstance(content_list, list):
-                return content_list[0].get("text", "")
+        # 处理 LangChain 消息对象
+        if isinstance(msg, HumanMessage):
+            if isinstance(msg.content, str):
+                return msg.content
+            elif isinstance(msg.content, list):
+                for part in msg.content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        return part.get("text", "")
+            return str(msg.content)
+        
+        # 处理字典格式 (兼容性)
+        if isinstance(msg, dict):
+            if msg.get("type") == "human" or msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            return part.get("text", "")
+                return str(content)
+                
     return ""
 
 def _build_agent_routing_prompt(user_text: str, agents: List[Dict[str, Any]]) -> str:
@@ -861,8 +878,11 @@ def _map_agent_name_to_node(agent_name: str) -> str:
     mapping = {
         "plan": "plan",
         "sights": "sights_agent",
+        "sights_agent": "sights_agent",
         "transport": "transport_agent",
+        "transport_agent": "transport_agent",
         "food": "food_agent",
+        "food_agent": "food_agent",
         "agent_tech": "agent_tech",
         "summary": "summary"
     }
@@ -877,11 +897,18 @@ async def route_to_expert(state: AgentState) -> str:
     2. 语义理解：能理解同义词和上下文
     3. 多意图处理：能判断主要意图和次要意图
     """
+    # 1. 优先使用 supervisor_node 决定的路由（核心逻辑）
+    if state.get("route"):
+        route = state["route"]
+        # 确保路由名称被正确映射到节点名称
+        return _map_agent_name_to_node(route)
+
+    # 2. 回退到基于 LLM 的意图识别（兼容性）
     user_text = _extract_user_text(state)
 
     agents = agent_manager.list_agents()
     if not agents:
-        workflow_logger.warning("router", "No agents registered, using fallback")
+        workflow_logger.warning("router", "No agents registered, using fallback", state.get("thread_id", "unknown"))
         return "agent_tech"
 
     routing_prompt = _build_agent_routing_prompt(user_text, agents)
@@ -900,11 +927,11 @@ async def route_to_expert(state: AgentState) -> str:
                 selected_agent = "agent_tech"
 
         node_name = _map_agent_name_to_node(selected_agent)
-        workflow_logger.info("router", f"LLM routed '{user_text[:30]}...' → {node_name}")
+        workflow_logger.info("router", f"LLM routed '{user_text[:30]}...' → {node_name}", state.get("thread_id", "unknown"))
         return node_name
 
     except Exception as e:
-        workflow_logger.error("router", f"LLM routing failed: {e}, using keyword fallback")
+        workflow_logger.error(state.get("thread_id", "unknown"), "router", e)
         return _keyword_fallback_route(user_text)
 
 def _keyword_fallback_route(text: str) -> str:
@@ -1030,7 +1057,6 @@ def _build_graph() -> StateGraph:
 async def build_async_agent_graph(
     config: RunnableConfig | None = None
 ) -> StateGraph:
-    await _initialize_components()
     graph = _build_graph()
     checkpointer = await get_async_checkpointer()
     compiled = graph.compile(checkpointer=checkpointer)
@@ -1038,28 +1064,18 @@ async def build_async_agent_graph(
 
 
 async def get_async_graph(graph_id: str = "default"):
-    """获取异步执行图实例"""
-    global _async_agent
+    global _async_agent, _graph_compile_cache
+    if graph_id in _graph_compile_cache:
+        return _graph_compile_cache[graph_id]
+    async with _agent_lock:
+        compiled = await build_async_agent_graph()
+        await _initialize_components()
+        _graph_compile_cache[graph_id] = compiled
+        _async_agent = compiled
+    return compiled
 
-    if graph_id == "default":
-        async with _agent_lock:
-            if _async_agent is None:
-                _async_agent = await build_async_agent_graph()
-        return _async_agent
 
-    return await build_async_agent_graph()
-
-
-def clear_graph_cache(graph_id: str = None):
-    """清除状态图缓存"""
+def clear_graph_cache():
     global _graph_compile_cache, _async_agent
-
-    if graph_id is None:
-        _graph_compile_cache = {}
-        _async_agent = None
-        logger.info("🗑️ 所有状态图缓存已清除")
-    elif graph_id in _graph_compile_cache:
-        del _graph_compile_cache[graph_id]
-        if graph_id == "default":
-            _async_agent = None
-        logger.info(f"🗑️ 状态图缓存已清除: {graph_id}")
+    _graph_compile_cache.clear()
+    _async_agent = None

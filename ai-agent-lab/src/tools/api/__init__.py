@@ -45,7 +45,7 @@ MCP_CACHE_TTL: int = 300
 
 
 async def _get_mcp_tools_cached() -> List[LangChainBaseTool]:
-    """获取 MCP 工具（带缓存，避免重复初始化）"""
+    """获取 MCP 工具（带缓存，并已转换为 LangChain 工具对象）"""
     global _mcp_tools_cache, _mcp_tools_cache_time
     
     import time
@@ -56,8 +56,33 @@ async def _get_mcp_tools_cached() -> List[LangChainBaseTool]:
     
     try:
         from src.tools.implementations.mcp_adapter import get_langchain_tools_from_mcp
-        _mcp_tools_cache = await get_langchain_tools_from_mcp()
+        from langchain_core.tools import StructuredTool
+        
+        # 获取原始 MCP 工具数据（字典列表）
+        mcp_tools_data = await get_langchain_tools_from_mcp()
+        
+        wrapped_tools = []
+        if mcp_tools_data:
+            for tool_data in mcp_tools_data:
+                if isinstance(tool_data, dict) and "name" in tool_data:
+                    # 包装为 StructuredTool
+                    try:
+                        mcp_tool = StructuredTool(
+                            name=tool_data["name"],
+                            description=tool_data.get("description", "无描述"),
+                            func=tool_data["adapter"],
+                            coroutine=tool_data["adapter"],
+                            args_schema=tool_data.get("input_model")
+                        )
+                        wrapped_tools.append(mcp_tool)
+                    except Exception as wrap_e:
+                        print(f"⚠️ 包装 MCP 工具 {tool_data.get('name')} 失败: {wrap_e}")
+                elif hasattr(tool_data, "name"):
+                    wrapped_tools.append(tool_data)
+        
+        _mcp_tools_cache = wrapped_tools
         _mcp_tools_cache_time = current_time
+        
     except ImportError:
         _mcp_tools_cache = []
     except Exception as e:
@@ -200,15 +225,22 @@ class ToolAPI:
         """转换为 LangChain 工具格式（异步版本，推荐使用）"""
         langchain_tools = []
         
+        # 1. 加载静态注册的工具
         for tool_class in tool_registry.get_all_tools():
-            tool_instance = tool_class()
-            langchain_tools.append(tool_instance)
+            try:
+                tool_instance = tool_class()
+                langchain_tools.append(tool_instance)
+            except Exception as e:
+                print(f"⚠️ 实例化工具 {tool_class.__name__} 失败: {e}")
         
+        # 2. 加载 MCP 工具 (已在缓存中转换为 LangChain 工具对象)
         try:
             mcp_tools = await _get_mcp_tools_cached()
             if mcp_tools:
-                langchain_tools.extend(mcp_tools)
-                print(f"🔧 已加载 {len(mcp_tools)} 个 MCP 工具")
+                # 确保只添加具有 name 属性的对象
+                valid_mcp_tools = [t for t in mcp_tools if hasattr(t, "name")]
+                langchain_tools.extend(valid_mcp_tools)
+                print(f"🔧 已加载 {len(valid_mcp_tools)} 个 MCP 工具")
         except Exception as e:
             print(f"⚠️ MCP 工具加载失败: {e}")
         
