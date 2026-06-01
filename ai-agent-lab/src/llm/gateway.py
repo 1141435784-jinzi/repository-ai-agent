@@ -48,6 +48,12 @@ from src.config import (
     OLLAMA_MAX_TOKENS,
     DEFAULT_LLM_PROVIDER,
     TEMPERATURE,
+    REDIS_HOST,
+    REDIS_PORT,
+    REDIS_DB,
+    REDIS_PASSWORD,
+    REDIS_ENABLED,
+    REDIS_CACHE_TTL,
 )
 
 # Prometheus 指标集成
@@ -290,7 +296,7 @@ class SemanticCache:
     
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息
-        
+
         Returns:
             dict: 缓存统计
         """
@@ -300,6 +306,255 @@ class SemanticCache:
                 "max_size": self.max_size,
                 "threshold": self.similarity_threshold,
             }
+
+
+# ============================================================
+# L5 特性 2b：Redis 语义缓存（分布式版本）
+# ============================================================
+
+class RedisSemanticCache:
+    """Redis 语义缓存 - 支持分布式部署的 LLM 响应缓存
+
+    【企业实战】为什么需要 Redis 版缓存？
+    - 多实例/多服务器共享缓存
+    - 缓存持久化，重启不丢失
+    - 支持 TTL 过期策略
+    - 支持集群部署
+    """
+
+    _redis_client: Optional["redis.Redis"] = None
+
+    def __init__(
+        self,
+        max_size: int = 10000,
+        similarity_threshold: float = 0.95,
+        ttl: int = REDIS_CACHE_TTL,
+    ):
+        """初始化 Redis 语义缓存
+
+        Args:
+            max_size: 最大缓存条目数
+            similarity_threshold: 相似度阈值（0-1）
+            ttl: 缓存过期时间（秒）
+        """
+        self.max_size = max_size
+        self.similarity_threshold = similarity_threshold
+        self.ttl = ttl
+        self._embeddings = None
+        self._embedding_lock = threading.Lock()
+        self._embedding_prefix = "semantic_cache:embedding:"
+        self._response_prefix = "semantic_cache:response:"
+        self._index_key = "semantic_cache:index"
+
+    @classmethod
+    def _get_redis(cls) -> Optional["redis.Redis"]:
+        """获取 Redis 连接（类级别单例）"""
+        if cls._redis_client is None:
+            try:
+                import redis as redis_lib
+                cls._redis_client = redis_lib.Redis(
+                    host=REDIS_HOST,
+                    port=REDIS_PORT,
+                    db=REDIS_DB,
+                    password=REDIS_PASSWORD or None,
+                    decode_responses=False,
+                    socket_connect_timeout=5,
+                )
+                cls._redis_client.ping()
+                logger.info("RedisSemanticCache 连接成功")
+            except Exception as e:
+                logger.warning(f"RedisSemanticCache 连接失败: {e}")
+                cls._redis_client = None
+        return cls._redis_client
+
+    def _get_embeddings(self):
+        """懒加载 embedding 模型"""
+        if self._embeddings is None:
+            with self._embedding_lock:
+                if self._embeddings is None:
+                    try:
+                        from src.rag.embedding import get_embeddings
+                        self._embeddings = get_embeddings()
+                        logger.debug("RedisSemanticCache embedding 模型加载成功")
+                    except Exception as e:
+                        logger.warning(f"RedisSemanticCache 无法加载 embedding 模型: {e}")
+                        self._embeddings = None
+        return self._embeddings
+
+    def _compute_hash(self, text: str) -> str:
+        """计算文本的 MD5 哈希"""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """计算余弦相似度"""
+        if not vec1 or not vec2:
+            return 0.0
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = sum(a * a for a in vec1) ** 0.5
+        norm2 = sum(b * b for b in vec2) ** 0.5
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        return dot_product / (norm1 * norm2)
+
+    def _vector_to_bytes(self, vec: List[float]) -> bytes:
+        """将向量转换为字节存储"""
+        import struct
+        return struct.pack(f'{len(vec)}f', *vec)
+
+    def _bytes_to_vector(self, data: bytes) -> List[float]:
+        """从字节恢复向量"""
+        import struct
+        vec_len = len(data) // 4
+        return list(struct.unpack(f'{vec_len}f', data))
+
+    def get(self, query: str) -> Optional[str]:
+        """从 Redis 缓存中获取响应
+
+        Args:
+            query: 查询文本
+
+        Returns:
+            str: 缓存的响应，如果未命中则返回 None
+        """
+        redis_client = self._get_redis()
+        if redis_client is None:
+            return None
+
+        query_hash = self._compute_hash(query)
+
+        response_key = f"{self._response_prefix}{query_hash}"
+        cached_response = redis_client.get(response_key)
+        if cached_response:
+            if isinstance(cached_response, bytes):
+                cached_response = cached_response.decode('utf-8')
+            logger.debug(f"Redis 缓存命中（精确）: '{query[:30]}...'")
+            return cached_response
+
+        embeddings_model = self._get_embeddings()
+        if embeddings_model is None:
+            return None
+
+        try:
+            query_embedding = embeddings_model.embed_query(query)
+            query_vec_bytes = self._vector_to_bytes(query_embedding)
+
+            all_cached = redis_client.zrange(self._index_key, 0, -1)
+            if not all_cached:
+                return None
+
+            best_match = None
+            best_similarity = 0.0
+
+            for cached_hash in all_cached:
+                cached_hash_str = cached_hash.decode('utf-8') if isinstance(cached_hash, bytes) else cached_hash
+                embedding_key = f"{self._embedding_prefix}{cached_hash_str}"
+
+                cached_vec_bytes = redis_client.get(embedding_key)
+                if cached_vec_bytes:
+                    cached_vec = self._bytes_to_vector(cached_vec_bytes)
+                    similarity = self._cosine_similarity(query_embedding, cached_vec)
+
+                    if similarity >= self.similarity_threshold and similarity > best_similarity:
+                        best_similarity = similarity
+                        response_key = f"{self._response_prefix}{cached_hash_str}"
+                        best_match = redis_client.get(response_key)
+
+            if best_match:
+                if isinstance(best_match, bytes):
+                    best_match = best_match.decode('utf-8')
+                logger.debug(f"Redis 缓存命中（语义 {best_similarity:.2f}）: '{query[:30]}...'")
+                return best_match
+
+        except Exception as e:
+            logger.warning(f"Redis 语义匹配失败: {e}")
+
+        logger.debug(f"Redis 缓存未命中：'{query[:30]}...'")
+        return None
+
+    def set(self, query: str, response: str):
+        """将响应存入 Redis 缓存
+
+        Args:
+            query: 查询文本
+            response: LLM 响应
+        """
+        redis_client = self._get_redis()
+        if redis_client is None:
+            return
+
+        query_hash = self._compute_hash(query)
+
+        response_key = f"{self._response_prefix}{query_hash}"
+        redis_client.setex(response_key, self.ttl, response.encode('utf-8'))
+
+        embeddings_model = self._get_embeddings()
+        if embeddings_model:
+            try:
+                query_embedding = embeddings_model.embed_query(query)
+                embedding_key = f"{self._embedding_prefix}{query_hash}"
+                redis_client.setex(embedding_key, self.ttl, self._vector_to_bytes(query_embedding))
+
+                redis_client.zadd(self._index_key, {query_hash: 0})
+
+                current_size = redis_client.zcard(self._index_key)
+                if current_size > self.max_size:
+                    to_remove = current_size - self.max_size
+                    old_entries = redis_client.zrange(self._index_key, 0, to_remove - 1)
+                    for old_hash in old_entries:
+                        old_hash_str = old_hash.decode('utf-8') if isinstance(old_hash, bytes) else old_hash
+                        redis_client.delete(f"{self._response_prefix}{old_hash_str}")
+                        redis_client.delete(f"{self._embedding_prefix}{old_hash_str}")
+                    redis_client.zremrangebyrank(self._index_key, 0, to_remove - 1)
+
+            except Exception as e:
+                logger.warning(f"Redis embedding 存储失败: {e}")
+
+    def clear(self):
+        """清空 Redis 缓存"""
+        redis_client = self._get_redis()
+        if redis_client is None:
+            return
+
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = redis_client.scan(cursor, match=f"{self._embedding_prefix}*", count=100)
+                if keys:
+                    redis_client.delete(*keys)
+                if cursor == 0:
+                    break
+
+            cursor = 0
+            while True:
+                cursor, keys = redis_client.scan(cursor, match=f"{self._response_prefix}*", count=100)
+                if keys:
+                    redis_client.delete(*keys)
+                if cursor == 0:
+                    break
+
+            redis_client.delete(self._index_key)
+            logger.info("Redis 语义缓存已清空")
+        except Exception as e:
+            logger.warning(f"Redis 缓存清空失败: {e}")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取 Redis 缓存统计信息"""
+        redis_client = self._get_redis()
+        if redis_client is None:
+            return {"enabled": False, "size": 0}
+
+        try:
+            size = redis_client.zcard(self._index_key) if redis_client.exists(self._index_key) else 0
+            return {
+                "enabled": True,
+                "size": size,
+                "max_size": self.max_size,
+                "threshold": self.similarity_threshold,
+                "ttl": self.ttl,
+            }
+        except Exception as e:
+            logger.warning(f"获取 Redis 缓存统计失败: {e}")
+            return {"enabled": False, "error": str(e)}
 
 
 # ============================================================

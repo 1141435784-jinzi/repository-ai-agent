@@ -82,6 +82,16 @@ DEFAULT_LLM_PROVIDER: str = os.getenv("DEFAULT_LLM_PROVIDER", "")
 TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.7"))
 
 # ============================================================
+# Redis 配置（用于语义缓存）
+# ============================================================
+REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
+REDIS_ENABLED: bool = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))
+
+# ============================================================
 # LangSmith 可观测性配置
 # ============================================================
 LANGCHAIN_TRACING_V2: str = os.getenv("LANGCHAIN_TRACING_V2", "false")
